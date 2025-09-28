@@ -158,7 +158,14 @@ def ensure_include_line():
     include_line = 'include "/etc/nftables.d/*.nft"'
     if not os.path.exists(MAIN_NFT_CONFIG):
         print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}")
-        default_config = ["#!/usr/sbin/nft -f", "flush ruleset", "", f'# Added by Tunnel Manager v{VERSION}', include_line]
+        # FIXED: Line broken up to be shorter than 121 characters.
+        default_config = [
+            "#!/usr/sbin/nft -f",
+            "flush ruleset",
+            "",
+            f'# Added by Tunnel Manager v{VERSION}',
+            include_line
+        ]
         with open(MAIN_NFT_CONFIG, 'w') as f:
             f.write("\n".join(default_config))
         print(f"{C.GREEN}Default config created successfully.{C.END}")
@@ -331,14 +338,20 @@ def edit_tunnel():
                 current_ports_set.add(int(part))
 
         print(f"\nEditing tunnel: {C.BOLD}{tunnel_to_edit}{C.END}\n(Press Enter to keep the current value)")
-        new_ip = input(f"  Enter new destination IP [{current_details['foreign_ip']}]: ").strip() or current_details['foreign_ip']
+        # FIXED: Line broken up to be shorter than 121 characters.
+        prompt_ip = f"  Enter new destination IP [{current_details['foreign_ip']}]: "
+        new_ip_input = input(prompt_ip).strip()
+        new_ip = new_ip_input or current_details['foreign_ip']
+
         if not is_valid_ip(new_ip):
             print(f"{C.RED}Error: Invalid IP address format.{C.END}")
             return
 
         new_ports = input(f"  Enter new ports [{current_details['ports']}]: ").strip() or current_details['ports']
 
-        if new_ports != current_details['ports'] and not check_port_conflicts(new_ports, existing_tunnel_ports=current_ports_set):
+        # FIXED: Line broken up to be shorter than 121 characters.
+        if (new_ports != current_details['ports'] and
+                not check_port_conflicts(new_ports, existing_tunnel_ports=current_ports_set)):
             return
 
         tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': new_ports}
