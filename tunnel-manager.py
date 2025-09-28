@@ -9,11 +9,10 @@ import shutil
 import re
 
 # --- Configuration & Version ---
-VERSION = '1.2.0'
+VERSION = '1.3.0'
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
 TUNNEL_RULES_FILE = '/etc/nftables.d/tunnel-manager-nat.nft'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
-INSTALL_PATH = '/usr/local/bin/tunnel-manager'
 NFT_NAT_TABLE_NAME = 'tunnel_manager_nat'
 
 
@@ -96,6 +95,7 @@ def enable_ip_forwarding():
 def load_tunnels():
     if not os.path.exists(TUNNELS_DB_FILE):
         return {}
+    os.makedirs(os.path.dirname(TUNNELS_DB_FILE), exist_ok=True)
     with open(TUNNELS_DB_FILE, 'r') as f:
         try:
             return json.load(f)
@@ -158,7 +158,6 @@ def ensure_include_line():
     include_line = 'include "/etc/nftables.d/*.nft"'
     if not os.path.exists(MAIN_NFT_CONFIG):
         print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}")
-        # FIXED: Line broken up to be shorter than 121 characters.
         default_config = [
             "#!/usr/sbin/nft -f",
             "flush ruleset",
@@ -176,7 +175,7 @@ def ensure_include_line():
                 return True
 
         print(f"\n{C.BOLD}{C.YELLOW}--- CONFIGURATION MISMATCH ---{C.END}")
-        print(f"Your main firewall file ({C.CYAN}{MAIN_NFT_CONFIG}{C.YELLOW}) is missing the required include line.")
+        print(f"Your main firewall file ({C.CYAN}{MAIN_NFT_CONFIG}{C.YELLOW}) is missing a required line.")
         choice = input(f"Add it automatically? ({C.GREEN}Y{C.END}/{C.RED}n{C.END}): ").lower().strip()
 
         if choice in ('y', ''):
@@ -338,7 +337,6 @@ def edit_tunnel():
                 current_ports_set.add(int(part))
 
         print(f"\nEditing tunnel: {C.BOLD}{tunnel_to_edit}{C.END}\n(Press Enter to keep the current value)")
-        # FIXED: Line broken up to be shorter than 121 characters.
         prompt_ip = f"  Enter new destination IP [{current_details['foreign_ip']}]: "
         new_ip_input = input(prompt_ip).strip()
         new_ip = new_ip_input or current_details['foreign_ip']
@@ -349,7 +347,6 @@ def edit_tunnel():
 
         new_ports = input(f"  Enter new ports [{current_details['ports']}]: ").strip() or current_details['ports']
 
-        # FIXED: Line broken up to be shorter than 121 characters.
         if (new_ports != current_details['ports'] and
                 not check_port_conflicts(new_ports, existing_tunnel_ports=current_ports_set)):
             return
@@ -387,53 +384,14 @@ def remove_tunnel():
         print(f"{C.RED}Invalid selection.{C.END}")
 
 
-# --- Installation and Main Menu ---
-def install():
-    print(f"{C.YELLOW}Installing Tunnel Manager to {INSTALL_PATH}...{C.END}")
-    try:
-        shutil.copy2(sys.argv[0], INSTALL_PATH)
-        os.chmod(INSTALL_PATH, 0o755)
-        print(f"{C.GREEN}Installation successful!{C.END}")
-        print(f"Run with: {C.BOLD}sudo tunnel-manager{C.END}")
-        ensure_dependencies()
-        enable_ip_forwarding()
-    except Exception as e:
-        print(f"{C.RED}Installation failed: {e}{C.END}")
-
-
-def uninstall():
-    print(f"{C.RED}This will remove the script, all configurations, and generated firewall rules.{C.END}")
-    choice = input(f"Are you sure you want to uninstall? (y/{C.GREEN}N{C.END}): ").lower().strip()
-    if choice != 'y':
-        print("Uninstall cancelled.")
-        return
-
-    if os.path.exists(INSTALL_PATH):
-        os.remove(INSTALL_PATH)
-        print(f"Removed script from {INSTALL_PATH}")
-    if os.path.exists(os.path.dirname(TUNNELS_DB_FILE)):
-        shutil.rmtree(os.path.dirname(TUNNELS_DB_FILE))
-        print("Removed configuration directory.")
-    if os.path.exists(TUNNEL_RULES_FILE):
-        os.remove(TUNNEL_RULES_FILE)
-        print(f"Removed rules file {TUNNEL_RULES_FILE}")
-
-    print(f"{C.CYAN}\nUninstallation complete.{C.END}")
-    print("Reloading firewall to apply changes...")
-    run_command(['systemctl', 'reload', 'nftables'])
-
-
+# --- Main Menu ---
 def main_menu():
     if os.geteuid() != 0:
         sys.exit(f"{C.RED}This script requires root privileges. Please run with sudo.{C.END}")
 
-    if not os.path.exists(INSTALL_PATH) and sys.argv[0] != INSTALL_PATH:
-        clear_screen()
-        print(f"{C.HEADER}===== Welcome to Tunnel Manager v{VERSION} Setup =====")
-        choice = input(f"{C.CYAN}1. Install\n2. Exit\nEnter choice: {C.END}").strip()
-        if choice == '1':
-            install()
-        sys.exit()
+    # First run dependency checks
+    ensure_dependencies()
+    enable_ip_forwarding()
 
     while True:
         clear_screen()
@@ -443,29 +401,26 @@ def main_menu():
         print(f"{C.YELLOW}3. Edit Tunnel")
         print(f"{C.RED}4. Remove Tunnel")
         print(f"{C.CYAN}5. Re-apply All Rules")
-        print(f"{C.CYAN}6. Uninstall")
-        print(f"{C.CYAN}7. Exit{C.END}")
+        print(f"{C.CYAN}6. Exit{C.END}")
         choice = input("Enter your choice: ").strip()
 
-        action_map = {
-            '1': add_new_tunnel,
-            '2': list_tunnels,
-            '3': edit_tunnel,
-            '4': remove_tunnel,
-            '5': generate_and_apply_rules,
-            '6': uninstall
-        }
-
-        if choice in action_map:
-            action_map[choice]()
-            if choice == '6':
-                break
-            press_enter_to_continue()
-        elif choice == '7':
+        if choice == '1':
+            add_new_tunnel()
+        elif choice == '2':
+            list_tunnels()
+        elif choice == '3':
+            edit_tunnel()
+        elif choice == '4':
+            remove_tunnel()
+        elif choice == '5':
+            generate_and_apply_rules()
+        elif choice == '6':
             print("Exiting.")
             break
         else:
             print(f"{C.RED}Invalid choice.{C.END}")
+
+        if choice in ['1', '2', '3', '4', '5']:
             press_enter_to_continue()
 
 
