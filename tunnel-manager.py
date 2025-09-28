@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
 import json
@@ -6,77 +8,130 @@ import subprocess
 import shutil
 import re
 
-# --- Configuration ---
+# --- Configuration & Version ---
+VERSION = '1.2.0'  # ADDED: Version number for easy tracking.
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
 TUNNEL_RULES_FILE = '/etc/nftables.d/tunnel-manager-nat.nft'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
 INSTALL_PATH = '/usr/local/bin/tunnel-manager'
 NFT_NAT_TABLE_NAME = 'tunnel_manager_nat'
 
+
 # --- Color Codes ---
 class C:
-    HEADER = '\033[95m'; BLUE = '\033[94m'; CYAN = '\033[96m'; GREEN = '\033[92m'
-    YELLOW = '\033[93m'; RED = '\033[91m'; END = '\033[0m'; BOLD = '\033[1m'
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    END = '\033[0m'
+    BOLD = '\033[1m'
+
 
 # --- Helper Functions ---
-def clear_screen(): os.system('clear')
-def press_enter_to_continue(): input(f"\n{C.YELLOW}Press Enter to return to the menu...{C.END}")
+def clear_screen():
+    os.system('clear')
+
+
+def press_enter_to_continue():
+    input(f"\n{C.YELLOW}Press Enter to return to the menu...{C.END}")
+
 
 def run_command(command, use_sudo=True, capture=True):
-    if use_sudo and os.geteuid() != 0: command = ['sudo'] + command
+    if use_sudo and os.geteuid() != 0:
+        command = ['sudo'] + command
     try:
         return subprocess.run(command, check=True, capture_output=capture, text=True)
     except subprocess.CalledProcessError as e:
         print(f"\n{C.RED}Error executing command: {' '.join(command)}{C.END}")
-        print(f"{C.RED}Stderr: {e.stderr.strip()}{C.END}")
+        if e.stderr:
+            print(f"{C.RED}Stderr: {e.stderr.strip()}{C.END}")
         return None
 
+
+# ADDED: Helper function to validate IPv4 address format.
+def is_valid_ip(ip_str):
+    """Checks if a string is a valid IPv4 address."""
+    pattern = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
+    if not pattern.match(ip_str):
+        return False
+    parts = ip_str.split('.')
+    for item in parts:
+        if not 0 <= int(item) <= 255:
+            return False
+    return True
+
+
+# --- Core Logic Functions ---
 def ensure_dependencies():
     if not shutil.which('nft'):
-        print(f"{C.YELLOW}nftables not found. Attempting to install...{C.END}")
-        if run_command(['apt', 'update', '-y']) and run_command(['apt', 'install', 'nftables', '-y']):
-            print(f"{C.GREEN}nftables installed successfully.{C.END}")
+        [cite_start]print(f"{C.YELLOW}nftables not found. Attempting to install...{C.END}") [cite: 4]
+        # CHANGED: Set capture=False to show installation progress.
+        if run_command(['apt', 'update', '-y'], capture=False) and \
+           run_command(['apt', 'install', 'nftables', '-y'], capture=False):
+            [cite_start]print(f"{C.GREEN}nftables installed successfully.{C.END}") [cite: 4]
         else:
-            print(f"{C.RED}Failed to install nftables. Please install it manually.{C.END}"); sys.exit(1)
+            [cite_start]print(f"{C.RED}Failed to install nftables. Please install it manually.{C.END}") [cite: 4, 5]
+            sys.exit(1)
+
 
 def enable_ip_forwarding():
     result = run_command(['sysctl', 'net.ipv4.ip_forward'], capture=True)
-    if result and 'net.ipv4.ip_forward = 1' in result.stdout: return
+    if result and 'net.ipv4.ip_forward = 1' in result.stdout:
+        return
     print(f"{C.YELLOW}Enabling IP forwarding...{C.END}")
     run_command(['sysctl', '-w', 'net.ipv4.ip_forward=1'])
     with open('/etc/sysctl.conf', 'r+') as f:
         content = f.read()
-        if 'net.ipv4.ip_forward=1' not in content: f.write('\nnet.ipv4.ip_forward=1\n')
+        if 'net.ipv4.ip_forward=1' not in content:
+            f.write('\nnet.ipv4.ip_forward=1\n')
         elif '#net.ipv4.ip_forward=1' in content:
             content = content.replace('#net.ipv4.ip_forward=1', 'net.ipv4.ip_forward=1')
-            f.seek(0); f.write(content); f.truncate()
-    run_command(['sysctl', '-p']); print(f"{C.GREEN}IP forwarding enabled.{C.END}")
+            [cite_start]f.seek(0) [cite: 6]
+            [cite_start]f.write(content) [cite: 6]
+            [cite_start]f.truncate() [cite: 6]
+    run_command(['sysctl', '-p'])
+    print(f"{C.GREEN}IP forwarding enabled.{C.END}")
+
 
 def load_tunnels():
-    if not os.path.exists(TUNNELS_DB_FILE): return {}
+    if not os.path.exists(TUNNELS_DB_FILE):
+        return {}
     with open(TUNNELS_DB_FILE, 'r') as f:
-        try: return json.load(f)
-        except json.JSONDecodeError: return {}
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
 
 def save_tunnels(tunnels):
     os.makedirs(os.path.dirname(TUNNELS_DB_FILE), exist_ok=True)
-    with open(TUNNELS_DB_FILE, 'w') as f: json.dump(tunnels, f, indent=4)
+    with open(TUNNELS_DB_FILE, 'w') as f:
+        json.dump(tunnels, f, indent=4)
     print(f"\n{C.GREEN}Tunnel configuration saved.{C.END}")
+
 
 def check_port_conflicts(ports_str, existing_tunnel_ports=None):
     """Checks if any of the specified ports are already in use."""
     try:
-        requested_ports = set()
-        parts = ports_str.split(',')
+        [cite_start]requested_ports = set() [cite: 7]
+        [cite_start]parts = ports_str.split(',') [cite: 7]
         for part in parts:
             part = part.strip()
+            if not part:
+                continue
             if '-' in part:
                 start, end = map(int, part.split('-'))
                 requested_ports.update(range(start, end + 1))
             else:
-                requested_ports.add(int(part))
+                [cite_start]requested_ports.add(int(part)) [cite: 8]
     except ValueError:
-        print(f"{C.RED}Error: Invalid port format. Please use numbers, commas, or ranges (e.g., 80,443,1000-2000).{C.END}")
+        error_msg = (
+            f"{C.RED}Error: Invalid port format. Please use numbers, "
+            f"commas, or ranges (e.g., 80,443,1000-2000).{C.END}"
+        )
+        print(error_msg)
         return False
 
     used_ports = set()
@@ -85,53 +140,57 @@ def check_port_conflicts(ports_str, existing_tunnel_ports=None):
         if result:
             for line in result.stdout.splitlines()[1:]:
                 match = re.search(r':(\d+)\s', line)
-                if match:
-                    used_ports.add(int(match.group(1)))
-    
-    # If editing, don't count the tunnel's own current ports as a conflict
+                [cite_start]if match: [cite: 10]
+                    [cite_start]used_ports.add(int(match.group(1))) [cite: 10]
+
     if existing_tunnel_ports:
         used_ports -= existing_tunnel_ports
 
     conflicts = requested_ports.intersection(used_ports)
     if conflicts:
-        print(f"{C.RED}Error: The following port(s) are already in use: {', '.join(map(str, sorted(conflicts)))}{C.END}")
+        ports = ', '.join(map(str, sorted(conflicts)))
+        print(f"{C.RED}Error: The following port(s) are already in use: {ports}{C.END}")
         return False
-    return True
+
+    return True  # FIXED: Was missing the "return" statement.
+
 
 def ensure_include_line():
     """Checks for the include line in the main config and asks to add it if missing."""
     include_line = 'include "/etc/nftables.d/*.nft"'
     if not os.path.exists(MAIN_NFT_CONFIG):
-        print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}")
-        default_config = ["#!/usr/sbin/nft -f", "flush ruleset", "", include_line]
-        with open(MAIN_NFT_CONFIG, 'w') as f: f.write("\n".join(default_config))
+        [cite_start]print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}") [cite: 12]
+        default_config = ["#!/usr/sbin/nft -f", "flush ruleset", "", f'# Added by Tunnel Manager v{VERSION}', include_line]
+        with open(MAIN_NFT_CONFIG, 'w') as f:
+            f.write("\n".join(default_config))
         print(f"{C.GREEN}Default config created successfully.{C.END}")
         return True
     else:
         with open(MAIN_NFT_CONFIG, 'r') as f:
             if include_line in f.read():
                 return True
-        
-        print(f"\n{C.BOLD}{C.YELLOW}--- CONFIGURATION MISMATCH ---{C.END}")
+
+        [cite_start]print(f"\n{C.BOLD}{C.YELLOW}--- CONFIGURATION MISMATCH ---{C.END}") [cite: 13]
         print(f"Your main firewall file ({C.CYAN}{MAIN_NFT_CONFIG}{C.YELLOW}) is missing the required include line.")
         choice = input(f"Add it automatically? ({C.GREEN}Y{C.END}/{C.RED}n{C.END}): ").lower().strip()
 
-        if choice == 'y' or choice == '':
+        if choice in ('y', ''):
             try:
                 with open(MAIN_NFT_CONFIG, 'a') as f:
-                    f.write(f"\n# Added by Tunnel Manager\n{include_line}\n")
+                    [cite_start]f.write(f"\n# Added by Tunnel Manager v{VERSION}\n{include_line}\n") [cite: 14]
                 print(f"{C.GREEN}Successfully added the include line.{C.END}")
                 return True
             except Exception as e:
-                print(f"{C.RED}Error: Could not write to {MAIN_NFT_CONFIG}. Please add the line manually. {e}{C.END}")
+                [cite_start]print(f"{C.RED}Error: Could not write to {MAIN_NFT_CONFIG}. Please add the line manually. {e}{C.END}") [cite: 14, 15]
                 return False
         else:
             print(f"\n{C.BOLD}{C.RED}--- MANUAL ACTION REQUIRED ---")
             print(f"Please add the following line to the end of {C.CYAN}{MAIN_NFT_CONFIG}{C.RED}:")
             print(f"    {C.GREEN}{include_line}")
-            print(f"\nThen, run this command to apply all changes:")
-            print(f"    {C.GREEN}sudo systemctl reload nftables{C.END}")
+            print("\nThen, run this command to apply all changes:")
+            [cite_start]print(f"    {C.GREEN}sudo systemctl reload nftables{C.END}") [cite: 16]
             return False
+
 
 def generate_and_apply_rules(new_ports=None):
     if not ensure_include_line():
@@ -143,42 +202,48 @@ def generate_and_apply_rules(new_ports=None):
     if not tunnels:
         if os.path.exists(TUNNEL_RULES_FILE):
             os.remove(TUNNEL_RULES_FILE)
+            print(f"{C.YELLOW}No tunnels configured. Removing old rules file.{C.END}")
         print(f"{C.CYAN}Reloading nftables service...{C.END}")
-        if run_command(['systemctl', 'reload', 'nftables']):
-            print(f"{C.GREEN}Service reloaded successfully.{C.END}")
+        [cite_start]if run_command(['systemctl', 'reload', 'nftables']): [cite: 17]
+            [cite_start]print(f"{C.GREEN}Service reloaded successfully.{C.END}") [cite: 17]
         else:
-            print(f"{C.RED}Failed to reload nftables.{C.END}")
+            [cite_start]print(f"{C.RED}Failed to reload nftables.{C.END}") [cite: 17]
         return
 
-    interface_cmd = "ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'"
-    public_interface = subprocess.getoutput(interface_cmd)
+    [cite_start]interface_cmd = "ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'" [cite: 18]
+    public_interface = subprocess.getoutput(interface_cmd).strip()
     if not public_interface:
-        print(f"{C.RED}Error: Could not determine default interface.{C.END}"); return
+        print(f"{C.RED}Error: Could not determine default public interface.{C.END}")
+        return
 
     prerouting_rules = []
-    postrouting_rules = []
+    # IMPROVED: Use a set to avoid duplicate masquerade rules for the same IP.
+    unique_foreign_ips = set()
 
     for tunnel in tunnels.values():
         foreign_ip, ports = tunnel['foreign_ip'], tunnel['ports']
         prerouting_rules.append(f"iif {public_interface} tcp dport {{ {ports} }} dnat ip to {foreign_ip}")
         prerouting_rules.append(f"iif {public_interface} udp dport {{ {ports} }} dnat ip to {foreign_ip}")
-        postrouting_rules.append(f"ip daddr {foreign_ip} oif {public_interface} masquerade")
+        unique_foreign_ips.add(foreign_ip)
 
-    prerouting_rules_str = "; ".join(prerouting_rules)
-    postrouting_rules_str = "; ".join(postrouting_rules)
+    postrouting_rules = [f"ip daddr {ip} oif {public_interface} masquerade" for ip in unique_foreign_ips]
+
+    prerouting_rules_str = "\n\t\t".join(prerouting_rules)
+    postrouting_rules_str = "\n\t\t".join(postrouting_rules)
 
     rules_content = [
-        f"# NAT rules generated by Tunnel Manager", "",
+        f"# NAT rules generated by Tunnel Manager v{VERSION}",
+        "",
         f"table inet {NFT_NAT_TABLE_NAME} {{",
-        f"\tchain prerouting {{",
-        f"\t\ttype nat hook prerouting priority dstnat; policy accept;",
-        f"\t\t{prerouting_rules_str};",
-        f"\t}}",
-        f"\tchain postrouting {{",
-        f"\t\ttype nat hook postrouting priority srcnat; policy accept;",
-        f"\t\t{postrouting_rules_str};",
-        f"\t}}",
-        f"}}",
+        "\tchain prerouting {",
+        "\t\ttype nat hook prerouting priority dstnat; policy accept;",
+        f"\t\t{prerouting_rules_str}",
+        "\t}",
+        "\tchain postrouting {",
+        "\t\ttype nat hook postrouting priority srcnat; policy accept;",
+        f"\t\t{postrouting_rules_str}",
+        "\t}",
+        "}",
     ]
 
     with open(TUNNEL_RULES_FILE, 'w') as f:
@@ -189,18 +254,33 @@ def generate_and_apply_rules(new_ports=None):
         print(f"{C.GREEN}NAT rules applied successfully.{C.END}")
         if new_ports:
             print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
-            print(f"To allow traffic, you MUST open port(s) {C.GREEN}{new_ports}{C.YELLOW} in your firewall's INPUT and FORWARD chains.{C.END}")
+            warning_msg = (
+                f"To allow traffic, you MUST open port(s) {C.GREEN}{new_ports}"
+                f"{C.YELLOW} in your firewall's INPUT and FORWARD chains.{C.END}"
+            )
+            print(warning_msg)
     else:
         print(f"{C.RED}Failed to reload nftables. Check 'systemctl status nftables' for errors.{C.END}")
+
 
 # --- Menu Functions ---
 def add_new_tunnel():
     tunnels = load_tunnels()
     name = input(f"{C.CYAN}Enter a unique name for the tunnel: {C.END}").strip()
-    if not name or name in tunnels: print(f"{C.RED}Error: Name is empty or already exists.{C.END}"); return
-    foreign_ip = input(f"{C.CYAN}Enter the destination server IP: {C.END}").strip()
-    ports = input(f"{C.CYAN}Enter ports to forward: {C.END}").strip()
-    
+    if not name:
+        print(f"{C.RED}Error: Name cannot be empty.{C.END}")
+        return
+    if name in tunnels:
+        print(f"{C.RED}Error: A tunnel with this name already exists.{C.END}")
+        return
+
+    [cite_start]foreign_ip = input(f"{C.CYAN}Enter the destination server IP: {C.END}").strip() [cite: 24]
+    # ADDED: IP address validation.
+    if not is_valid_ip(foreign_ip):
+        print(f"{C.RED}Error: Invalid IP address format.{C.END}")
+        return
+
+    ports = input(f"{C.CYAN}Enter ports to forward (e.g., 80,443,1000-2000): {C.END}").strip()
     if not check_port_conflicts(ports):
         return
 
@@ -208,115 +288,178 @@ def add_new_tunnel():
     save_tunnels(tunnels)
     generate_and_apply_rules(new_ports=ports)
 
+
 def list_tunnels():
     tunnels = load_tunnels()
-    if not tunnels: print(f"\n{C.YELLOW}No tunnels are configured.{C.END}"); return
-    print(f"\n{C.HEADER}--- Configured Tunnels ---{C.END}")
-    for name, details in tunnels.items():
+    if not tunnels:
+        [cite_start]print(f"\n{C.YELLOW}No tunnels are configured.{C.END}") [cite: 25]
+        return
+    [cite_start]print(f"\n{C.HEADER}--- Configured Tunnels ---{C.END}") [cite: 25]
+    for name, details in sorted(tunnels.items()):
         print(f"  {C.BOLD}{C.BLUE}Name:           {name}{C.END}")
         print(f"  {C.CYAN}Forwarding Ports: {details['ports']}")
         print(f"  {C.CYAN}To Server IP:     {details['foreign_ip']}{C.END}")
         print(f"{C.HEADER}--------------------------{C.END}")
 
+
 def edit_tunnel():
     tunnels = load_tunnels()
-    if not tunnels: print(f"{C.YELLOW}There are no tunnels to edit.{C.END}"); return
-    print(f"\n{C.HEADER}--- Select a Tunnel to Edit ---{C.END}")
-    tunnel_names = list(tunnels.keys())
-    for i, name in enumerate(tunnel_names, 1): print(f"{C.YELLOW}{i}. {name}{C.END}")
+    if not tunnels:
+        [cite_start]print(f"{C.YELLOW}There are no tunnels to edit.{C.END}") [cite: 26]
+        return
+    [cite_start]print(f"\n{C.HEADER}--- Select a Tunnel to Edit ---{C.END}") [cite: 26]
+    tunnel_names = sorted(list(tunnels.keys()))
+    for i, name in enumerate(tunnel_names, 1):
+        print(f"{C.YELLOW}{i}. {name}{C.END}")
     try:
-        choice = int(input(f"\n{C.CYAN}Enter number to edit (0 to cancel): {C.END}"))
-        if choice == 0: return
+        choice_str = input(f"\n{C.CYAN}Enter number to edit (0 to cancel): {C.END}")
+        if not choice_str:
+            return
+        choice = int(choice_str)
+        if choice == 0:
+            return
+
         tunnel_to_edit = tunnel_names[choice - 1]
         current_details = tunnels[tunnel_to_edit]
-        
-        # Get the current ports to exclude them from the conflict check
-        current_ports_set = set()
-        parts = current_details['ports'].split(',')
+
+        [cite_start]current_ports_set = set() [cite: 27]
+        [cite_start]parts = current_details['ports'].split(',') [cite: 27]
         for part in parts:
             part = part.strip()
+            if not part:
+                continue
             if '-' in part:
                 start, end = map(int, part.split('-'))
-                current_ports_set.update(range(start, end + 1))
+                [cite_start]current_ports_set.update(range(start, end + 1)) [cite: 28]
             else:
                 current_ports_set.add(int(part))
 
         print(f"\nEditing tunnel: {C.BOLD}{tunnel_to_edit}{C.END}\n(Press Enter to keep the current value)")
         new_ip = input(f"  Enter new destination IP [{current_details['foreign_ip']}]: ").strip() or current_details['foreign_ip']
+        if not is_valid_ip(new_ip):
+            print(f"{C.RED}Error: Invalid IP address format.{C.END}")
+            return
+
         new_ports = input(f"  Enter new ports [{current_details['ports']}]: ").strip() or current_details['ports']
-        
-        if new_ports != current_details['ports'] and not check_port_conflicts(new_ports, existing_tunnel_ports=current_ports_set):
+
+        [cite_start]if new_ports != current_details['ports'] and not check_port_conflicts(new_ports, existing_tunnel_ports=current_ports_set): [cite: 29]
             return
 
         tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': new_ports}
         save_tunnels(tunnels)
         generate_and_apply_rules(new_ports=new_ports)
-    except (ValueError, IndexError): print(f"{C.RED}Invalid selection.{C.END}")
+    except (ValueError, IndexError):
+        print(f"{C.RED}Invalid selection.{C.END}")
+
 
 def remove_tunnel():
     tunnels = load_tunnels()
-    if not tunnels: print(f"{C.YELLOW}There are no tunnels to remove.{C.END}"); return
-    print(f"\n{C.HEADER}--- Select a Tunnel to Remove ---{C.END}")
-    tunnel_names = list(tunnels.keys())
-    for i, name in enumerate(tunnel_names, 1): print(f"{C.YELLOW}{i}. {name}{C.END}")
+    if not tunnels:
+        [cite_start]print(f"{C.YELLOW}There are no tunnels to remove.{C.END}") [cite: 30]
+        return
+    [cite_start]print(f"\n{C.HEADER}--- Select a Tunnel to Remove ---{C.END}") [cite: 30]
+    tunnel_names = sorted(list(tunnels.keys()))
+    for i, name in enumerate(tunnel_names, 1):
+        print(f"{C.YELLOW}{i}. {name}{C.END}")
     try:
-        choice = int(input(f"\n{C.CYAN}Enter number to remove (0 to cancel): {C.END}"))
-        if choice == 0: return
+        choice_str = input(f"\n{C.CYAN}Enter number to remove (0 to cancel): {C.END}")
+        if not choice_str:
+            return
+        choice = int(choice_str)
+        if choice == 0:
+            return
+
         tunnel_to_remove = tunnel_names[choice - 1]
         del tunnels[tunnel_to_remove]
         save_tunnels(tunnels)
         generate_and_apply_rules()
-        print(f"\n{C.GREEN}Tunnel '{tunnel_to_remove}' removed.{C.END}")
-    except (ValueError, IndexError): print(f"{C.RED}Invalid selection.{C.END}")
+        [cite_start]print(f"\n{C.GREEN}Tunnel '{tunnel_to_remove}' removed.{C.END}") [cite: 31]
+    except (ValueError, IndexError):
+        print(f"{C.RED}Invalid selection.{C.END}")
+
 
 # --- Installation and Main Menu ---
 def install():
     print(f"{C.YELLOW}Installing Tunnel Manager to {INSTALL_PATH}...{C.END}")
     try:
-        shutil.copy2(sys.argv[0], INSTALL_PATH); os.chmod(INSTALL_PATH, 0o755)
-        print(f"{C.GREEN}Installation successful! Run with: {C.BOLD}sudo tunnel-manager{C.END}")
-        ensure_dependencies(); enable_ip_forwarding()
-    except Exception as e: print(f"{C.RED}Installation failed: {e}{C.END}")
+        shutil.copy2(sys.argv[0], INSTALL_PATH)
+        [cite_start]os.chmod(INSTALL_PATH, 0o755) [cite: 32]
+        print(f"{C.GREEN}Installation successful!{C.END}")
+        print(f"Run with: {C.BOLD}sudo tunnel-manager{C.END}")
+        ensure_dependencies()
+        [cite_start]enable_ip_forwarding() [cite: 33]
+    except Exception as e:
+        print(f"{C.RED}Installation failed: {e}{C.END}")
+
 
 def uninstall():
-    if os.path.exists(INSTALL_PATH): os.remove(INSTALL_PATH)
-    if os.path.exists(os.path.dirname(TUNNELS_DB_FILE)): shutil.rmtree(os.path.dirname(TUNNELS_DB_FILE))
-    if os.path.exists(TUNNEL_RULES_FILE): os.remove(TUNNEL_RULES_FILE)
-    print(f"{C.GREEN}Uninstallation complete.{C.END}")
-    print(f"Restarting firewall to apply changes: ")
-    run_command(['systemctl', 'restart', 'nftables'])
+    print(f"{C.RED}This will remove the script, all configurations, and generated firewall rules.{C.END}")
+    choice = input(f"Are you sure you want to uninstall? (y/{C.GREEN}N{C.END}): ").lower().strip()
+    if choice != 'y':
+        print("Uninstall cancelled.")
+        return
+
+    if os.path.exists(INSTALL_PATH):
+        os.remove(INSTALL_PATH)
+        print(f"Removed script from {INSTALL_PATH}")
+    if os.path.exists(os.path.dirname(TUNNELS_DB_FILE)):
+        shutil.rmtree(os.path.dirname(TUNNELS_DB_FILE))
+        print("Removed configuration directory.")
+    if os.path.exists(TUNNEL_RULES_FILE):
+        os.remove(TUNNEL_RULES_FILE)
+        print(f"Removed rules file {TUNNEL_RULES_FILE}")
+
+    print(f"{C.CYAN}\nUninstallation complete.{C.END}")
+    print("Reloading firewall to apply changes...")
+    run_command(['systemctl', 'reload', 'nftables'])
+
 
 def main_menu():
-    if os.geteuid() != 0: sys.exit(f"{C.RED}This script requires root privileges. Please run with sudo.{C.END}")
-    if not os.path.exists(INSTALL_PATH):
+    if os.geteuid() != 0:
+        sys.exit(f"{C.RED}This script requires root privileges. Please run with sudo.{C.END}")
+
+    # First-run installation prompt
+    if not os.path.exists(INSTALL_PATH) and sys.argv[0] != INSTALL_PATH:
         clear_screen()
-        print(f"{C.HEADER}===== Welcome to Tunnel Manager Setup =====")
-        choice = input(f"{C.CYAN}1. Install\n2. Exit\nEnter choice: {C.END}").strip()
-        if choice == '1': install()
-    else:
-        while True:
-            clear_screen()
-            print(f"\n{C.HEADER}===== NFTables Tunnel Manager =====")
-            print(f"{C.GREEN}1. Add New Tunnel")
-            print(f"{C.BLUE}2. List All Tunnels")
-            print(f"{C.YELLOW}3. Edit Tunnel")
-            print(f"{C.RED}4. Remove Tunnel")
-            print(f"{C.CYAN}5. Re-apply All Rules")
-            print(f"{C.CYAN}6. Uninstall")
-            print(f"{C.CYAN}7. Exit{C.END}")
-            choice = input("Enter your choice: ").strip()
+        print(f"{C.HEADER}===== Welcome to Tunnel Manager v{VERSION} Setup =====")
+        [cite_start]choice = input(f"{C.CYAN}1. Install\n2. Exit\nEnter choice: {C.END}").strip() [cite: 34]
+        if choice == '1':
+            install()
+        sys.exit()
 
-            if choice == '1': add_new_tunnel()
-            elif choice == '2': list_tunnels()
-            elif choice == '3': edit_tunnel()
-            elif choice == '4': remove_tunnel()
-            elif choice == '5': generate_and_apply_rules()
-            elif choice == '6': uninstall(); break
-            elif choice == '7': print("Exiting."); break
-            else: print(f"{C.RED}Invalid choice.{C.END}")
+    while True:
+        clear_screen()
+        print(f"{C.HEADER}===== NFTables Tunnel Manager v{VERSION} =====")  # CHANGED: Display version
+        [cite_start]print(f"{C.GREEN}1. Add New Tunnel") [cite: 35]
+        [cite_start]print(f"{C.BLUE}2. List All Tunnels") [cite: 35]
+        [cite_start]print(f"{C.YELLOW}3. Edit Tunnel") [cite: 35]
+        [cite_start]print(f"{C.RED}4. Remove Tunnel") [cite: 35]
+        [cite_start]print(f"{C.CYAN}5. Re-apply All Rules") [cite: 35]
+        [cite_start]print(f"{C.CYAN}6. Uninstall") [cite: 35]
+        [cite_start]print(f"{C.CYAN}7. Exit{C.END}") [cite: 35]
+        choice = input("Enter your choice: ").strip()
 
-            if choice in ['1', '2', '3', '4', '5']:
-                press_enter_to_continue()
+        action_map = {
+            '1': add_new_tunnel,
+            '2': list_tunnels,
+            '3': edit_tunnel,
+            '4': remove_tunnel,
+            '5': generate_and_apply_rules,
+            '6': uninstall
+        }
+
+        if choice in action_map:
+            action_map[choice]()
+            if choice == '6':  # Uninstall action should exit the script
+                break
+            press_enter_to_continue()
+        elif choice == '7':
+            print("Exiting.")
+            break
+        else:
+            print(f"{C.RED}Invalid choice.{C.END}")
+            press_enter_to_continue()
+
 
 if __name__ == '__main__':
     main_menu()
