@@ -7,7 +7,7 @@ import shutil
 import re
 
 # --- Configuration ---
-SCRIPT_VERSION = "v1.3"
+SCRIPT_VERSION = "v1.5 (Standalone)"
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
 TUNNEL_RULES_FILE = '/etc/nftables.d/tunnel-manager-nat.nft'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
