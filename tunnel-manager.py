@@ -9,7 +9,7 @@ import shutil
 import re
 
 # --- Configuration & Version ---
-VERSION = '1.3.2'  # FIXED: flake8 spacing issue
+VERSION = '1.3.3'  # Final version with all fixes
 
 # --- Other Constants ---
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
@@ -63,6 +63,27 @@ def is_valid_ip(ip_str):
     return True
 
 
+def parse_ports(ports_str):
+    """Parses a string of ports (e.g., "80,443,1000-2000") into a set of integers."""
+    ports = set()
+    if not ports_str:
+        return ports
+    try:
+        parts = ports_str.split(',')
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if '-' in part:
+                start, end = map(int, part.split('-'))
+                ports.update(range(start, end + 1))
+            else:
+                ports.add(int(part))
+        return ports
+    except ValueError:
+        return None  # Indicates a parsing error
+
+
 # --- Core Logic Functions ---
 def ensure_dependencies():
     if not shutil.which('nft'):
@@ -98,11 +119,11 @@ def load_tunnels():
     if not os.path.exists(TUNNELS_DB_FILE):
         return {}
     os.makedirs(os.path.dirname(TUNNELS_DB_FILE), exist_ok=True)
-    with open(TUNNELS_DB_FILE, 'r') as f:
-        try:
+    try:
+        with open(TUNNELS_DB_FILE, 'r') as f:
             return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
 
 
 def save_tunnels(tunnels):
@@ -112,45 +133,31 @@ def save_tunnels(tunnels):
     print(f"\n{C.GREEN}Tunnel configuration saved.{C.END}")
 
 
-def check_port_conflicts(ports_str, existing_tunnel_ports=None):
-    """Checks if any of the specified ports are already in use."""
-    try:
-        requested_ports = set()
-        parts = ports_str.split(',')
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            if '-' in part:
-                start, end = map(int, part.split('-'))
-                requested_ports.update(range(start, end + 1))
-            else:
-                requested_ports.add(int(part))
-    except ValueError:
-        error_msg = (
-            f"{C.RED}Error: Invalid port format. Please use numbers, "
-            f"commas, or ranges (e.g., 80,443,1000-2000).{C.END}"
-        )
-        print(error_msg)
-        return False
-
-    used_ports = set()
+def check_port_conflicts(ports_to_check, all_existing_tunnel_ports=None):
+    """Comprehensive check for port conflicts against system and other tunnels."""
+    # 1. Check against system ports
+    system_used_ports = set()
     for proto_flag in ['-tlnp', '-ulnp']:
         result = run_command(['ss', proto_flag], capture=True)
         if result:
             for line in result.stdout.splitlines()[1:]:
                 match = re.search(r':(\d+)\s', line)
                 if match:
-                    used_ports.add(int(match.group(1)))
+                    system_used_ports.add(int(match.group(1)))
 
-    if existing_tunnel_ports:
-        used_ports -= existing_tunnel_ports
-
-    conflicts = requested_ports.intersection(used_ports)
-    if conflicts:
-        ports = ', '.join(map(str, sorted(conflicts)))
-        print(f"{C.RED}Error: The following port(s) are already in use: {ports}{C.END}")
+    system_conflicts = ports_to_check.intersection(system_used_ports)
+    if system_conflicts:
+        ports_str = ', '.join(map(str, sorted(system_conflicts)))
+        print(f"{C.RED}Error: Port(s) {ports_str} are already in use by another system service.{C.END}")
         return False
+
+    # 2. Check against other existing tunnels
+    if all_existing_tunnel_ports:
+        tunnel_conflicts = ports_to_check.intersection(all_existing_tunnel_ports)
+        if tunnel_conflicts:
+            ports_str = ', '.join(map(str, sorted(tunnel_conflicts)))
+            print(f"{C.RED}Error: Port(s) {ports_str} are already used by another tunnel.{C.END}")
+            return False
 
     return True
 
@@ -259,7 +266,6 @@ def generate_and_apply_rules(new_ports=None):
         print(f"{C.GREEN}NAT rules applied successfully.{C.END}")
         if new_ports:
             print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
-            # CHANGED: More generic firewall warning
             warning_msg = (
                 f"If you are running a firewall (like ufw, firewalld, or iptables), "
                 f"you MUST open port(s) {C.GREEN}{new_ports}{C.YELLOW} in its INPUT "
@@ -286,13 +292,23 @@ def add_new_tunnel():
         print(f"{C.RED}Error: Invalid IP address format.{C.END}")
         return
 
-    ports = input(f"{C.CYAN}Enter ports to forward (e.g., 80,443,1000-2000): {C.END}").strip()
-    if not check_port_conflicts(ports):
+    ports_str = input(f"{C.CYAN}Enter ports to forward (e.g., 80,443,1000-2000): {C.END}").strip()
+    new_ports = parse_ports(ports_str)
+    if new_ports is None:
+        print(f"{C.RED}Error: Invalid port format specified.{C.END}")
         return
 
-    tunnels[name] = {'foreign_ip': foreign_ip, 'ports': ports}
+    # FIXED: Gather all ports from existing tunnels for a comprehensive check
+    all_tunnel_ports = set()
+    for tunnel in tunnels.values():
+        all_tunnel_ports.update(parse_ports(tunnel['ports']))
+
+    if not check_port_conflicts(new_ports, all_existing_tunnel_ports=all_tunnel_ports):
+        return
+
+    tunnels[name] = {'foreign_ip': foreign_ip, 'ports': ports_str}
     save_tunnels(tunnels)
-    generate_and_apply_rules(new_ports=ports)
+    generate_and_apply_rules(new_ports=ports_str)
 
 
 def list_tunnels():
@@ -328,18 +344,6 @@ def edit_tunnel():
         tunnel_to_edit = tunnel_names[choice - 1]
         current_details = tunnels[tunnel_to_edit]
 
-        current_ports_set = set()
-        parts = current_details['ports'].split(',')
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            if '-' in part:
-                start, end = map(int, part.split('-'))
-                current_ports_set.update(range(start, end + 1))
-            else:
-                current_ports_set.add(int(part))
-
         print(f"\nEditing tunnel: {C.BOLD}{tunnel_to_edit}{C.END}\n(Press Enter to keep the current value)")
         prompt_ip = f"  Enter new destination IP [{current_details['foreign_ip']}]: "
         new_ip_input = input(prompt_ip).strip()
@@ -349,15 +353,24 @@ def edit_tunnel():
             print(f"{C.RED}Error: Invalid IP address format.{C.END}")
             return
 
-        new_ports = input(f"  Enter new ports [{current_details['ports']}]: ").strip() or current_details['ports']
-
-        if (new_ports != current_details['ports'] and
-                not check_port_conflicts(new_ports, existing_tunnel_ports=current_ports_set)):
+        new_ports_str = input(f"  Enter new ports [{current_details['ports']}]: ").strip() or current_details['ports']
+        new_ports = parse_ports(new_ports_str)
+        if new_ports is None:
+            print(f"{C.RED}Error: Invalid port format specified.{C.END}")
             return
 
-        tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': new_ports}
+        # FIXED: Gather ports from OTHER tunnels to check for conflicts
+        other_tunnel_ports = set()
+        for name, details in tunnels.items():
+            if name != tunnel_to_edit:
+                other_tunnel_ports.update(parse_ports(details['ports']))
+
+        if not check_port_conflicts(new_ports, all_existing_tunnel_ports=other_tunnel_ports):
+            return
+
+        tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': new_ports_str}
         save_tunnels(tunnels)
-        generate_and_apply_rules(new_ports=new_ports)
+        generate_and_apply_rules(new_ports=new_ports_str)
     except (ValueError, IndexError):
         print(f"{C.RED}Invalid selection.{C.END}")
 
@@ -430,4 +443,4 @@ def main_menu():
 
 if __name__ == '__main__':
     main_menu()
-    
+        
