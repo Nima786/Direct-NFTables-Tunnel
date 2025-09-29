@@ -9,7 +9,9 @@ import shutil
 import re
 
 # --- Configuration & Version ---
-VERSION = '1.3.1' # Updated version
+VERSION = '1.3.2'  # FIXED: flake8 spacing issue
+
+# --- Other Constants ---
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
 TUNNEL_RULES_FILE = '/etc/nftables.d/tunnel-manager-nat.nft'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
@@ -208,7 +210,6 @@ def generate_and_apply_rules(new_ports=None):
             os.remove(TUNNEL_RULES_FILE)
             print(f"{C.YELLOW}No tunnels configured. Removing old rules file.{C.END}")
         print(f"{C.CYAN}Applying changes to nftables service...{C.END}")
-        # CHANGED: Using a more robust command
         if run_command(['systemctl', 'reload-or-restart', 'nftables']):
             print(f"{C.GREEN}Service updated successfully.{C.END}")
         else:
@@ -254,14 +255,15 @@ def generate_and_apply_rules(new_ports=None):
         f.write("\n".join(rules_content))
 
     print(f"{C.CYAN}Applying changes to nftables service...{C.END}")
-    # CHANGED: Using a more robust command
     if run_command(['systemctl', 'reload-or-restart', 'nftables']):
         print(f"{C.GREEN}NAT rules applied successfully.{C.END}")
         if new_ports:
             print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
+            # CHANGED: More generic firewall warning
             warning_msg = (
-                f"To allow traffic, you MUST open port(s) {C.GREEN}{new_ports}"
-                f"{C.YELLOW} in your firewall's INPUT and FORWARD chains.{C.END}"
+                f"If you are running a firewall (like ufw, firewalld, or iptables), "
+                f"you MUST open port(s) {C.GREEN}{new_ports}{C.YELLOW} in its INPUT "
+                f"and FORWARD chains to allow traffic.{C.END}"
             )
             print(warning_msg)
     else:
@@ -428,3 +430,4 @@ def main_menu():
 
 if __name__ == '__main__':
     main_menu()
+    
