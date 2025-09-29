@@ -9,7 +9,7 @@ import shutil
 import re
 
 # --- Configuration & Version ---
-VERSION = '1.3.0'
+VERSION = '1.3.1' # Updated version
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
 TUNNEL_RULES_FILE = '/etc/nftables.d/tunnel-manager-nat.nft'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
@@ -207,11 +207,12 @@ def generate_and_apply_rules(new_ports=None):
         if os.path.exists(TUNNEL_RULES_FILE):
             os.remove(TUNNEL_RULES_FILE)
             print(f"{C.YELLOW}No tunnels configured. Removing old rules file.{C.END}")
-        print(f"{C.CYAN}Reloading nftables service...{C.END}")
-        if run_command(['systemctl', 'reload', 'nftables']):
-            print(f"{C.GREEN}Service reloaded successfully.{C.END}")
+        print(f"{C.CYAN}Applying changes to nftables service...{C.END}")
+        # CHANGED: Using a more robust command
+        if run_command(['systemctl', 'reload-or-restart', 'nftables']):
+            print(f"{C.GREEN}Service updated successfully.{C.END}")
         else:
-            print(f"{C.RED}Failed to reload nftables.{C.END}")
+            print(f"{C.RED}Failed to update nftables.{C.END}")
         return
 
     interface_cmd = "ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'"
@@ -252,8 +253,9 @@ def generate_and_apply_rules(new_ports=None):
     with open(TUNNEL_RULES_FILE, 'w') as f:
         f.write("\n".join(rules_content))
 
-    print(f"{C.CYAN}Reloading nftables service to apply all rules...{C.END}")
-    if run_command(['systemctl', 'reload', 'nftables']):
+    print(f"{C.CYAN}Applying changes to nftables service...{C.END}")
+    # CHANGED: Using a more robust command
+    if run_command(['systemctl', 'reload-or-restart', 'nftables']):
         print(f"{C.GREEN}NAT rules applied successfully.{C.END}")
         if new_ports:
             print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
@@ -263,7 +265,7 @@ def generate_and_apply_rules(new_ports=None):
             )
             print(warning_msg)
     else:
-        print(f"{C.RED}Failed to reload nftables. Check 'systemctl status nftables' for errors.{C.END}")
+        print(f"{C.RED}Failed to apply rules. Check 'systemctl status nftables' for errors.{C.END}")
 
 
 # --- Menu Functions ---
