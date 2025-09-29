@@ -9,7 +9,7 @@ import shutil
 import re
 
 # --- Configuration & Version ---
-VERSION = '1.3.3'  # Final version with all fixes
+VERSION = '1.3.4'  # Final version with all fixes
 
 # --- Other Constants ---
 TUNNELS_DB_FILE = '/etc/tunnel_manager/tunnels.json'
@@ -121,7 +121,11 @@ def load_tunnels():
     os.makedirs(os.path.dirname(TUNNELS_DB_FILE), exist_ok=True)
     try:
         with open(TUNNELS_DB_FILE, 'r') as f:
-            return json.load(f)
+            # Handle empty file case
+            content = f.read()
+            if not content:
+                return {}
+            return json.loads(content)
     except (json.JSONDecodeError, FileNotFoundError):
         return {}
 
@@ -133,7 +137,7 @@ def save_tunnels(tunnels):
     print(f"\n{C.GREEN}Tunnel configuration saved.{C.END}")
 
 
-def check_port_conflicts(ports_to_check, all_existing_tunnel_ports=None):
+def check_port_conflicts(ports_to_check, other_tunnel_ports=None):
     """Comprehensive check for port conflicts against system and other tunnels."""
     # 1. Check against system ports
     system_used_ports = set()
@@ -152,8 +156,8 @@ def check_port_conflicts(ports_to_check, all_existing_tunnel_ports=None):
         return False
 
     # 2. Check against other existing tunnels
-    if all_existing_tunnel_ports:
-        tunnel_conflicts = ports_to_check.intersection(all_existing_tunnel_ports)
+    if other_tunnel_ports:
+        tunnel_conflicts = ports_to_check.intersection(other_tunnel_ports)
         if tunnel_conflicts:
             ports_str = ', '.join(map(str, sorted(tunnel_conflicts)))
             print(f"{C.RED}Error: Port(s) {ports_str} are already used by another tunnel.{C.END}")
@@ -294,16 +298,18 @@ def add_new_tunnel():
 
     ports_str = input(f"{C.CYAN}Enter ports to forward (e.g., 80,443,1000-2000): {C.END}").strip()
     new_ports = parse_ports(ports_str)
-    if new_ports is None:
-        print(f"{C.RED}Error: Invalid port format specified.{C.END}")
+    if new_ports is None or not new_ports:
+        print(f"{C.RED}Error: Invalid or empty port format specified.{C.END}")
         return
 
-    # FIXED: Gather all ports from existing tunnels for a comprehensive check
+    # FIXED: Correctly gather all ports from existing tunnels for a comprehensive check
     all_tunnel_ports = set()
     for tunnel in tunnels.values():
-        all_tunnel_ports.update(parse_ports(tunnel['ports']))
+        ports = parse_ports(tunnel['ports'])
+        if ports:
+            all_tunnel_ports.update(ports)
 
-    if not check_port_conflicts(new_ports, all_existing_tunnel_ports=all_tunnel_ports):
+    if not check_port_conflicts(new_ports, other_tunnel_ports=all_tunnel_ports):
         return
 
     tunnels[name] = {'foreign_ip': foreign_ip, 'ports': ports_str}
@@ -355,17 +361,19 @@ def edit_tunnel():
 
         new_ports_str = input(f"  Enter new ports [{current_details['ports']}]: ").strip() or current_details['ports']
         new_ports = parse_ports(new_ports_str)
-        if new_ports is None:
-            print(f"{C.RED}Error: Invalid port format specified.{C.END}")
+        if new_ports is None or not new_ports:
+            print(f"{C.RED}Error: Invalid or empty port format specified.{C.END}")
             return
 
-        # FIXED: Gather ports from OTHER tunnels to check for conflicts
+        # FIXED: Correctly gather ports from OTHER tunnels to check for conflicts
         other_tunnel_ports = set()
         for name, details in tunnels.items():
             if name != tunnel_to_edit:
-                other_tunnel_ports.update(parse_ports(details['ports']))
+                ports = parse_ports(details['ports'])
+                if ports:
+                    other_tunnel_ports.update(ports)
 
-        if not check_port_conflicts(new_ports, all_existing_tunnel_ports=other_tunnel_ports):
+        if not check_port_conflicts(new_ports, other_tunnel_ports=other_tunnel_ports):
             return
 
         tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': new_ports_str}
@@ -443,4 +451,3 @@ def main_menu():
 
 if __name__ == '__main__':
     main_menu()
-        
