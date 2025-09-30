@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.0.7
+Version: 2.0.9
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.0.7"
+SCRIPT_VERSION = "2.0.9"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
@@ -316,18 +316,18 @@ class DirectTunnelManager:
             for tunnel in tunnels.values():
                 foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
                 if ports_str:
-                    # flake8 fix: break long lines
-                    rule_tcp = (f"iif {public_interface} tcp dport {{ {ports_str} }} "
-                                f"dnat ip to {foreign_ip}")
-                    prerouting_rules.append(rule_tcp)
-                    rule_udp = (f"iif {public_interface} udp dport {{ {ports_str} }} "
-                                f"dnat ip to {foreign_ip}")
-                    prerouting_rules.append(rule_udp)
+                    prerouting_rules.append(
+                        f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}"
+                    )
+                    prerouting_rules.append(
+                        f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}"
+                    )
                     unique_foreign_ips.add(foreign_ip)
 
             for ip in unique_foreign_ips:
                 postrouting_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
 
+            # Correctly format the rules with proper indentation and newlines
             pr_rules_str = "\n\t\t".join(prerouting_rules)
             po_rules_str = "\n\t\t".join(postrouting_rules)
 
@@ -719,17 +719,25 @@ class ReverseTunnelManager:
             unique_dest_ips = set()
             for tunnel in tunnels.values():
                 ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
-                prerouting_rules.append(f'\tiif "{public_interface}" tcp dport {{ {ports} }} dnat ip to {dest_ip}')
-                prerouting_rules.append(f'\tiif "{public_interface}" udp dport {{ {ports} }} dnat ip to {dest_ip}')
+                prerouting_rules.append(f'iif "{public_interface}" tcp dport {{ {ports} }} dnat ip to {dest_ip}')
+                prerouting_rules.append(f'iif "{public_interface}" udp dport {{ {ports} }} dnat ip to {dest_ip}')
                 unique_dest_ips.add(dest_ip)
             for dest_ip in unique_dest_ips:
-                postrouting_rules.append(f'\tip daddr {dest_ip} oif "wg0" masquerade')
+                postrouting_rules.append(f'ip daddr {dest_ip} oif "wg0" masquerade')
+
+            pr_rules_str = "\n\t\t".join(prerouting_rules)
+            po_rules_str = "\n\t\t".join(postrouting_rules)
+
             rules_template = [
                 f"table inet {self.nft_table_name} {{",
-                "\tchain prerouting { type nat hook prerouting priority dstnat; policy accept; }",
-                "\n".join(prerouting_rules),
-                "\tchain postrouting { type nat hook postrouting priority srcnat; policy accept; }",
-                "\n".join(postrouting_rules),
+                "\tchain prerouting {",
+                "\t\ttype nat hook prerouting priority dstnat; policy accept;",
+                f"\t\t{pr_rules_str}",
+                "\t}",
+                "\tchain postrouting {",
+                "\t\ttype nat hook postrouting priority srcnat; policy accept;",
+                f"\t\t{po_rules_str}",
+                "\t}",
                 "}",
             ]
             rules_content = "\n".join(rules_template)
@@ -983,6 +991,7 @@ def uninstall_script():
                 print(f"{C.GREEN}Removed {path}.{C.END}")
             except OSError as e:
                 print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
+    # After removing files, apply an empty (or default) config
     apply_nftables_config()
     print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
     return True
