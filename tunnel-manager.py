@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.1.4
+Version: 2.1.5
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,15 +23,15 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.4"
+SCRIPT_VERSION = "2.1.5"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Hyper-Route/main/tunnel-manager.py"
-INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
+INSTALL_PATH = '/usr/local/bin/hyper-route'
 NFT_RULES_DIR = '/etc/nftables.d'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
 # --- UNIFIED CONFIGURATION ---
-ULTIMATE_RULES_FILE = os.path.join(NFT_RULES_DIR, 'ultimate-tunnel-manager.nft')
-ULTIMATE_TABLE_NAME = 'ultimate_tunnel_manager_nat'
+ULTIMATE_RULES_FILE = os.path.join(NFT_RULES_DIR, 'hyper-route.nft')
+ULTIMATE_TABLE_NAME = 'hyper_route_nat'
 
 
 # --- Color Codes ---
@@ -160,7 +160,7 @@ def ensure_ip_forwarding():
         with open('/etc/sysctl.conf', 'r+') as f:
             content = f.read()
             if 'net.ipv4.ip_forward=1' not in content:
-                f.write('\n# Enabled by Ultimate Tunnel Manager\nnet.ipv4.ip_forward=1\n')
+                f.write('\n# Enabled by Hyper-Route\nnet.ipv4.ip_forward=1\n')
             elif '#net.ipv4.ip_forward=1' in content:
                 content = content.replace('#net.ipv4.ip_forward=1', 'net.ipv4.ip_forward=1')
                 f.seek(0)
@@ -203,7 +203,7 @@ def ensure_base_nftables_config():
             if include_line not in content:
                 print(f"{C.YELLOW}Adding required include line to {MAIN_NFT_CONFIG}...{C.END}")
                 with open(MAIN_NFT_CONFIG, 'a') as f:
-                    f.write(f"\n# Added by Ultimate Tunnel Manager\n{include_line}\n")
+                    f.write(f"\n# Added by Hyper-Route\n{include_line}\n")
         except IOError as e:
             print(f"{C.RED}Fatal: Could not read/write {MAIN_NFT_CONFIG}: {e}{C.END}")
             return False
@@ -211,7 +211,7 @@ def ensure_base_nftables_config():
 
 
 def apply_nftables_config():
-    """Validates syntax and then applies the new nftables configuration."""
+    """Validates syntax, applies config, and ensures the service is enabled for boot."""
     print(f"{C.CYAN}Checking nftables configuration syntax...{C.END}")
     syntax_check = run_command(['nft', '--check', '--file', MAIN_NFT_CONFIG])
     if syntax_check.returncode != 0:
@@ -219,12 +219,24 @@ def apply_nftables_config():
         if syntax_check.stderr:
             print(f"{C.RED}Details: {syntax_check.stderr.strip()}{C.END}")
         return False
+
     print(f"{C.GREEN}Syntax OK. Applying changes to nftables service...{C.END}")
     apply_cmd = run_command(['systemctl', 'reload-or-restart', 'nftables'])
     if apply_cmd.returncode != 0:
         print(f"{C.RED}Failed to apply nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
         return False
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
+
+    # --- NEW: Ensure persistence after successful application ---
+    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
+    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
+        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
+        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
+        if enable_cmd.returncode == 0:
+            print(f"{C.GREEN}Service enabled successfully.{C.END}")
+        else:
+            print(f"{C.RED}Failed to enable nftables service.{C.END}")
+
     return True
 
 
@@ -283,12 +295,8 @@ def generate_and_apply_rules():
             for tunnel in direct_tunnels.values():
                 foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
                 if ports_str:
-                    rule_tcp = (f"iif {public_interface} tcp dport {{ {ports_str} }} "
-                                f"dnat ip to {foreign_ip}")
-                    direct_pr_rules.append(rule_tcp)
-                    rule_udp = (f"iif {public_interface} udp dport {{ {ports_str} }} "
-                                f"dnat ip to {foreign_ip}")
-                    direct_pr_rules.append(rule_udp)
+                    direct_pr_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
                     unique_foreign_ips.add(foreign_ip)
             for ip in unique_foreign_ips:
                 direct_po_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
@@ -988,7 +996,7 @@ def uninstall_script():
 
 def main():
     """The main entry point for the Ultimate Tunnel Manager."""
-    parser = argparse.ArgumentParser(description="Ultimate Tunnel Manager", add_help=False)
+    parser = argparse.ArgumentParser(description="Hyper-Route", add_help=False)
     parser.add_argument('command', nargs='?')
     parser.add_argument('--server-pubkey')
     parser.add_argument('--server-endpoint')
@@ -1008,7 +1016,7 @@ def main():
     reverse_manager = ReverseTunnelManager()
     while True:
         clear_screen()
-        print(f"{C.HEADER}======== Ultimate Tunnel Manager v{SCRIPT_VERSION} ========{C.END}")
+        print(f"{C.HEADER}======== Hyper-Route v{SCRIPT_VERSION} ========{C.END}")
         print(f"{C.CYAN}Please choose an option:{C.END}")
         print(f"{C.BLUE}1. Manage Direct NAT Tunnels")
         print(f"{C.GREEN}2. Manage Reverse WireGuard Tunnels")
