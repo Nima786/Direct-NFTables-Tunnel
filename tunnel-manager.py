@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '3.6.0'
+VERSION = '3.7.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -215,10 +215,8 @@ def direct_tunnel_workflow():
         postrouting = [f"ip daddr {ip} oif {interface} masquerade" for ip in unique_ips]
         rules = [
             f"# Direct NAT rules v{VERSION}", "", "table inet direct_nat {",
-            (f"\tchain prerouting {{ type nat hook prerouting priority dstnat; "
-             f"policy accept; {', '.join(prerouting)} }}"),
-            (f"\tchain postrouting {{ type nat hook postrouting priority srcnat; "
-             f"policy accept; {', '.join(postrouting)} }}"), "}"
+            f"\tchain prerouting {{ type nat hook prerouting priority dstnat; policy accept; {', '.join(prerouting)} }}",
+            f"\tchain postrouting {{ type nat hook postrouting priority srcnat; policy accept; {', '.join(postrouting)} }}", "}"
         ]
         with open(DIRECT_TUNNEL_RULES_FILE, 'w') as f:
             f.write('\n'.join(rules))
@@ -381,7 +379,7 @@ def reverse_tunnel_workflow():
                 self.end_headers()
 
         def log_message(self, format, *args):
-            return  # Suppress logging
+            return
 
     def run_temp_server(holder):
         nonlocal RECEIVED_KEY
