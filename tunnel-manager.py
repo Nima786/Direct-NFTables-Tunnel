@@ -970,7 +970,9 @@ def uninstall_script():
                 print(f"{C.GREEN}Removed {path}.{C.END}")
             except OSError as e:
                 print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
-    # After removing files, write a final empty ruleset
+    # After removing files, write a final empty ruleset and apply
+    if os.path.exists(ULTIMATE_RULES_FILE):
+        os.remove(ULTIMATE_RULES_FILE)
     generate_and_apply_rules()
     print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
     return True
