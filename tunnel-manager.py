@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '3.4.0'
+VERSION = '3.5.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -198,7 +198,6 @@ def direct_tunnel_workflow():
         return True
 
     def generate_direct_rules(new_ports_str=None):
-        # FIXED: Ensure the nftables.d directory exists before writing to it.
         os.makedirs(os.path.dirname(DIRECT_TUNNEL_RULES_FILE), exist_ok=True)
         tunnels = load_direct_tunnels()
         if not tunnels:
@@ -216,9 +215,8 @@ def direct_tunnel_workflow():
         postrouting = [f"ip daddr {ip} oif {interface} masquerade" for ip in unique_ips]
         rules = [
             f"# Direct NAT rules v{VERSION}", "", "table inet direct_nat {",
-            f"\tchain prerouting {{ type nat hook prerouting priority dstnat; policy accept; {' '.join(prerouting)} }}",
-            (f"\tchain postrouting {{ type nat hook postrouting priority srcnat; "
-             f"policy accept; {' '.join(postrouting)} }}"), "}"
+            f"\tchain prerouting {{ type nat hook prerouting priority dstnat; policy accept; {', '.join(prerouting)} }}",
+            f"\tchain postrouting {{ type nat hook postrouting priority srcnat; policy accept; {', '.join(postrouting)} }}", "}"
         ]
         with open(DIRECT_TUNNEL_RULES_FILE, 'w') as f:
             f.write('\n'.join(rules))
@@ -381,7 +379,7 @@ def reverse_tunnel_workflow():
                 self.end_headers()
 
         def log_message(self, format, *args):
-            return  # Suppress logging
+            return
 
     def run_temp_server(holder):
         nonlocal RECEIVED_KEY
@@ -553,7 +551,6 @@ def reverse_tunnel_workflow():
             print("Invalid selection.")
 
     def generate_reverse_rules():
-        # FIXED: Ensure the nftables.d directory exists before writing to it.
         os.makedirs(os.path.dirname(REVERSE_TUNNEL_RULES_FILE), exist_ok=True)
         tunnels = load_reverse_tunnels()
         if not tunnels:
@@ -738,3 +735,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
