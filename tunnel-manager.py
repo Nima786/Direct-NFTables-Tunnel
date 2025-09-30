@@ -3,10 +3,11 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.0.1
+Version: 2.0.2
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
+It can be run directly from the web or installed locally.
 """
 
 import os
@@ -22,9 +23,10 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.0.1"
-# Corrected URL for the client setup command
-REVERSE_TUNNEL_SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
+SCRIPT_VERSION = "2.0.2"
+# Corrected URL for the client setup and local installation
+SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
+INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
 
 
 # --- Color Codes ---
@@ -540,7 +542,6 @@ class ReverseTunnelManager:
         self.rules_dir = '/etc/nftables.d'
         self.nft_table_name = 'reverse_tunnel_manager_nat'
         self.wg_config_file = '/etc/wireguard/wg0.conf'
-        self.install_path = '/usr/local/bin/ultimate-tunnel-manager'
         self.manager_name = "Reverse Tunnel Manager"
 
     def get_public_ip(self):
@@ -652,7 +653,7 @@ class ReverseTunnelManager:
 
         callback_url = f"http://{server_public_ip}:58080/register"
         setup_cmd = (
-            f"curl -fsSL \"{REVERSE_TUNNEL_SCRIPT_URL}?cb=$(date +%s)\" | sudo python3 - setup_client "
+            f"curl -fsSL \"{SCRIPT_URL}?cb=$(date +%s)\" | sudo python3 - setup_client "
             f"--server-pubkey \"{server_pubkey}\" --server-endpoint \"{server_public_ip}:51820\" "
             f"--callback-url \"{callback_url}\" --client-ip \"{next_ip}\""
         )
@@ -762,7 +763,6 @@ class ReverseTunnelManager:
         for tunnel in tunnels.values():
             ports = tunnel["ports"]
             dest_ip = tunnel["dest_ip"]
-            # flake8 E501 fix: break long lines
             rule_tcp = (f'add rule inet {self.nft_table_name} prerouting iif "{public_interface}" '
                         f'tcp dport {{ {ports} }} dnat ip to {dest_ip}')
             rules.append(rule_tcp)
@@ -862,8 +862,6 @@ class ReverseTunnelManager:
             print(f"{C.RED}Error: Invalid port format.{C.END}")
             return
 
-        # The destination IP and peer name are tied to the peer and shouldn't be edited here.
-        # If a change is needed, the rule should be re-created for a different peer.
         del tunnels[old_name]
         tunnels[new_name] = {'dest_ip': current['dest_ip'], 'ports': formatted_ports, 'peer_name': current['peer_name']}
         if save_json_db(self.tunnels_db_file, tunnels):
@@ -891,45 +889,6 @@ class ReverseTunnelManager:
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
 
-    def install(self):
-        """Installs the script to a system path."""
-        if os.path.exists(self.install_path):
-            print(f"{C.YELLOW}Script is already installed at {self.install_path}.{C.END}")
-            return
-        print(f"{C.YELLOW}Installing to {self.install_path}...{C.END}")
-        try:
-            shutil.copy2(sys.argv[0], self.install_path)
-            os.chmod(self.install_path, 0o755)
-            # flake8 E501 fix
-            install_cmd = f"sudo {os.path.basename(self.install_path)}"
-            print(f"{C.GREEN}Installation successful! Run with: {C.BOLD}{install_cmd}{C.END}")
-        except Exception as e:
-            print(f"{C.RED}Installation failed: {e}{C.END}")
-
-    def uninstall(self):
-        """Removes the script and all its configurations."""
-        # flake8 E501 fix
-        print(f"{C.RED}{C.BOLD}This will remove the script, all databases, nftables rules,"
-              " and the WireGuard config.{C.END}")
-        choice = input(f"{C.RED}Are you sure you want to continue? (y/N): {C.END}")
-        if choice.lower().strip() != 'y':
-            print("Uninstall aborted.")
-            return
-
-        run_command(['wg-quick', 'down', 'wg0'])
-        for path in [self.install_path, self.db_dir, self.rules_file, self.wg_config_file]:
-            if os.path.exists(path):
-                try:
-                    if os.path.isdir(path):
-                        shutil.rmtree(path)
-                    else:
-                        os.remove(path)
-                    print(f"{C.GREEN}Removed {path}.{C.END}")
-                except OSError as e:
-                    print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
-        apply_nftables_config()
-        print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
-
     def main_menu(self):
         """The main menu loop for the Reverse Tunnel Manager."""
         deps = {'nftables': 'nft', 'curl': 'curl', 'wireguard': 'wg', 'gawk': 'awk'}
@@ -939,12 +898,12 @@ class ReverseTunnelManager:
         while True:
             clear_screen()
             print(f"{C.HEADER}===== Reverse Tunnel Manager {SCRIPT_VERSION} ====={C.END}")
-            # Refresh setup status each loop
             is_setup = os.path.exists(self.wg_config_file)
 
             if not is_setup:
-                print(f"{C.YELLOW}WireGuard relay has not been set up yet.{C.END}")
                 menu = {'1': ("Initial Relay Setup (Run this first!)", self.initial_relay_setup)}
+                print(f"{C.YELLOW}WireGuard relay has not been set up yet.{C.END}")
+                print(f"{C.BLUE}1. {menu['1'][0]}{C.END}")
             else:
                 print(f"{C.BLUE}--- WireGuard Management ---{C.END}")
                 menu = {
@@ -966,14 +925,13 @@ class ReverseTunnelManager:
                 print(f"{C.RED}6. Remove Forwarding Rule{C.END}")
 
             print(f"\n{C.YELLOW}--- System ---{C.END}")
+            last_key = len(menu)
             menu.update({
-                '7': ("Re-apply All Rules", self.generate_and_apply_rules),
-                '8': ("Uninstall", self.uninstall),
-                '9': ("Return to Main Menu", "exit")
+                str(last_key + 1): ("Re-apply All Rules", self.generate_and_apply_rules),
+                str(last_key + 2): ("Return to Main Menu", "exit")
             })
-            print(f"{C.YELLOW}7. Re-apply All Rules")
-            print(f"{C.YELLOW}8. Uninstall")
-            print(f"{C.YELLOW}9. Return to Main Menu{C.END}")
+            print(f"{C.YELLOW}{last_key + 1}. Re-apply All Rules")
+            print(f"{C.YELLOW}{last_key + 2}. Return to Main Menu{C.END}")
 
             choice = input("\nEnter your choice: ").strip()
             if choice in menu:
@@ -981,8 +939,6 @@ class ReverseTunnelManager:
                 if action == "exit":
                     break
                 action()
-                if action == self.uninstall:  # Exit after uninstall
-                    break
                 press_enter_to_continue()
             else:
                 print(f"{C.RED}Invalid choice.{C.END}")
@@ -1043,12 +999,76 @@ def setup_wireguard_client(server_pubkey, server_endpoint, callback_url, client_
 
 
 # ############################################################################
+# --- SYSTEM-WIDE INSTALL/UNINSTALL ---
+# ############################################################################
+
+def install_script():
+    """Downloads and installs the script to the system path."""
+    if os.path.exists(INSTALL_PATH):
+        print(f"{C.YELLOW}Script is already installed at {INSTALL_PATH}.{C.END}")
+        choice = input("Do you want to re-install/update? (y/N): ").lower().strip()
+        if choice != 'y':
+            print("Installation aborted.")
+            return
+
+    print(f"{C.YELLOW}Installing to {INSTALL_PATH}...{C.END}")
+    cmd_dl = ['curl', '-fsSL', SCRIPT_URL, '-o', INSTALL_PATH]
+    if run_command(cmd_dl) is None:
+        print(f"{C.RED}Installation failed: Could not download the script.{C.END}")
+        return
+
+    cmd_perm = ['chmod', '755', INSTALL_PATH]
+    if run_command(cmd_perm) is None:
+        print(f"{C.RED}Installation failed: Could not set permissions.{C.END}")
+        return
+
+    install_cmd = f"sudo {os.path.basename(INSTALL_PATH)}"
+    print(f"{C.GREEN}Installation successful! You can now run with: {C.BOLD}{install_cmd}{C.END}")
+
+
+def uninstall_script():
+    """Removes the script and all related configurations from the system."""
+    print(f"{C.RED}{C.BOLD}This will remove the script, all databases (direct and reverse), "
+          "nftables rules, and the WireGuard config.{C.END}")
+    choice = input(f"{C.RED}Are you sure you want to continue? (y/N): {C.END}")
+    if choice.lower().strip() != 'y':
+        print("Uninstall aborted.")
+        return
+
+    print(f"{C.YELLOW}Stopping WireGuard interface...{C.END}")
+    run_command(['wg-quick', 'down', 'wg0'])
+
+    paths_to_remove = [
+        INSTALL_PATH,
+        '/etc/tunnel_manager',  # Direct tunnel configs
+        '/etc/reverse_tunnel_manager',  # Reverse tunnel configs
+        '/etc/nftables.d/direct-tunnel-manager.nft',
+        '/etc/nftables.d/reverse-tunnel-manager.nft',
+        '/etc/wireguard/wg0.conf'
+    ]
+
+    for path in paths_to_remove:
+        if os.path.exists(path):
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                print(f"{C.GREEN}Removed {path}.{C.END}")
+            except OSError as e:
+                print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
+
+    apply_nftables_config()
+    print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
+    return True  # Signal to exit after uninstall
+
+
+# ############################################################################
 # --- MAIN SCRIPT EXECUTION ---
 # ############################################################################
 
 def main():
     """The main entry point for the Ultimate Tunnel Manager."""
-    # Handle client-side setup argument first
     parser = argparse.ArgumentParser(description="Ultimate Tunnel Manager", add_help=False)
     parser.add_argument('command', nargs='?')
     parser.add_argument('--server-pubkey')
@@ -1064,18 +1084,8 @@ def main():
             )
             return
 
-    # Proceed with the main menu if not a client setup
     if os.geteuid() != 0:
         sys.exit(f"{C.RED}This script requires root privileges. Please run with sudo.{C.END}")
-
-    # Handle one-time installation prompt
-    install_path = '/usr/local/bin/ultimate-tunnel-manager'
-    if not os.path.exists(install_path) and sys.argv[0] != install_path:
-        choice = input(f"{C.HEADER}Install Ultimate Tunnel Manager to {install_path}? (Y/n): {C.END}")
-        if choice.lower().strip() in ['y', '']:
-            ReverseTunnelManager().install()
-            print(f"{C.GREEN}Please run the script again using 'sudo ultimate-tunnel-manager'.{C.END}")
-        return
 
     direct_manager = DirectTunnelManager()
     reverse_manager = ReverseTunnelManager()
@@ -1083,10 +1093,13 @@ def main():
     while True:
         clear_screen()
         print(f"{C.HEADER}======== Ultimate Tunnel Manager v{SCRIPT_VERSION} ========{C.END}")
-        print(f"{C.CYAN}Please choose which manager to use:{C.END}")
+        print(f"{C.CYAN}Please choose an option:{C.END}")
         print(f"{C.BLUE}1. Manage Direct NAT Tunnels")
         print(f"{C.GREEN}2. Manage Reverse WireGuard Tunnels")
-        print(f"{C.YELLOW}3. Exit{C.END}")
+        print(f"\n{C.YELLOW}--- System ---{C.END}")
+        print(f"{C.YELLOW}3. Install Script Locally")
+        print(f"{C.RED}4. Uninstall Script and All Configs")
+        print(f"{C.CYAN}5. Exit{C.END}")
         choice = input("\nEnter your choice: ").strip()
 
         if choice == '1':
@@ -1094,6 +1107,14 @@ def main():
         elif choice == '2':
             reverse_manager.main_menu()
         elif choice == '3':
+            install_script()
+            press_enter_to_continue()
+        elif choice == '4':
+            if uninstall_script():
+                break  # Exit script after a successful uninstall
+            else:
+                press_enter_to_continue()
+        elif choice == '5':
             print("Exiting.")
             break
         else:
