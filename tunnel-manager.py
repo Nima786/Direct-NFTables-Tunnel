@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # --- Shared Configuration & Constants ---
 SCRIPT_VERSION = "2.0.0"
 # Correct URL for the client setup command
-REVERSE_TUNNEL_SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager"
+REVERSE_TUNNEL_SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 
 
 # --- Color Codes ---
