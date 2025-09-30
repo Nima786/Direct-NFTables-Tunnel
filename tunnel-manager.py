@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.1.2
+Version: 2.1.3
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,12 +23,15 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.2"
+SCRIPT_VERSION = "2.1.3"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
 NFT_RULES_DIR = '/etc/nftables.d'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
+# --- UNIFIED CONFIGURATION ---
+ULTIMATE_RULES_FILE = os.path.join(NFT_RULES_DIR, 'ultimate-tunnel-manager.nft')
+ULTIMATE_TABLE_NAME = 'ultimate_tunnel_manager_nat'
 
 
 # --- Color Codes ---
@@ -253,18 +256,99 @@ def save_json_db(db_file, data):
         return False
 
 
+def generate_and_apply_rules():
+    """
+    Generates a single, unified nftables rules file for BOTH managers
+    and reloads the service.
+    """
+    direct_tunnels = load_json_db(DirectTunnelManager.DB_FILE)
+    reverse_tunnels = load_json_db(ReverseTunnelManager.DB_FILE)
+    rules_content = ""
+
+    if not direct_tunnels and not reverse_tunnels:
+        print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset.{C.END}")
+        rules_content = f"table inet {ULTIMATE_TABLE_NAME} {{}}\n"
+    else:
+        result = run_command("ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'", shell=True)
+        public_interface = result.stdout.strip() if result and result.returncode == 0 else None
+        if not public_interface:
+            print(f"{C.RED}Error: Could not determine default public interface.{C.END}")
+            return
+
+        # --- Direct Tunnel Rules ---
+        direct_pr_rules = []
+        direct_po_rules = []
+        if direct_tunnels:
+            unique_foreign_ips = set()
+            for tunnel in direct_tunnels.values():
+                foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
+                if ports_str:
+                    direct_pr_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    unique_foreign_ips.add(foreign_ip)
+            for ip in unique_foreign_ips:
+                direct_po_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
+
+        # --- Reverse Tunnel Rules ---
+        reverse_pr_rules = []
+        reverse_po_rules = []
+        if reverse_tunnels:
+            unique_dest_ips = set()
+            for tunnel in reverse_tunnels.values():
+                ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
+                reverse_pr_rules.append(f'iif {public_interface} tcp dport {{ {ports} }} dnat ip to {dest_ip}')
+                reverse_pr_rules.append(f'iif {public_interface} udp dport {{ {ports} }} dnat ip to {dest_ip}')
+                unique_dest_ips.add(dest_ip)
+            for dest_ip in unique_dest_ips:
+                reverse_po_rules.append(f'ip daddr {dest_ip} oif wg0 masquerade')
+
+        # --- Assemble the final ruleset ---
+        rules_template = [
+            f"table inet {ULTIMATE_TABLE_NAME} {{",
+            "\tchain prerouting_direct {",
+            "\t\t" + "\n\t\t".join(direct_pr_rules),
+            "\t}",
+            "\tchain postrouting_direct {",
+            "\t\t" + "\n\t\t".join(direct_po_rules),
+            "\t}",
+            "\tchain prerouting_reverse {",
+            "\t\t" + "\n\t\t".join(reverse_pr_rules),
+            "\t}",
+            "\tchain postrouting_reverse {",
+            "\t\t" + "\n\t\t".join(reverse_po_rules),
+            "\t}",
+            "\tchain prerouting {",
+            "\t\ttype nat hook prerouting priority dstnat; policy accept;",
+            "\t\tjump prerouting_direct;",
+            "\t\tjump prerouting_reverse;",
+            "\t}",
+            "\tchain postrouting {",
+            "\t\ttype nat hook postrouting priority srcnat; policy accept;",
+            "\t\tjump postrouting_direct;",
+            "\t\tjump postrouting_reverse;",
+            "\t}",
+            "}",
+        ]
+        rules_content = "\n".join(rules_template)
+
+    try:
+        with open(ULTIMATE_RULES_FILE, 'w') as f:
+            f.write(rules_content)
+        apply_nftables_config()
+    except IOError as e:
+        print(f"{C.RED}Error writing rules file {ULTIMATE_RULES_FILE}: {e}{C.END}")
+
+
 # ############################################################################
 # --- DIRECT NAT TUNNEL MANAGER ---
 # ############################################################################
 
 class DirectTunnelManager:
     """Manages direct NAT port forwarding rules using nftables."""
+    DB_FILE = '/etc/tunnel_manager/tunnels.json'
 
     def __init__(self):
-        self.db_file = '/etc/tunnel_manager/tunnels.json'
-        self.rules_file = os.path.join(NFT_RULES_DIR, 'direct-tunnel-manager.nft')
-        self.nft_table_name = 'direct_tunnel_manager_nat'
-        self.manager_name = "Direct Tunnel Manager"
+        self.db_file = self.DB_FILE
 
     def check_port_conflicts(self, ports_to_check, tunnels, tunnel_to_ignore=None):
         """Checks for port conflicts against system services and other tunnels."""
@@ -294,68 +378,6 @@ class DirectTunnelManager:
             return False
         return True
 
-    def generate_and_apply_rules(self, new_ports_str=None):
-        """Generates the nftables rules file and reloads the service."""
-        tunnels = load_json_db(self.db_file)
-        rules_content = ""
-
-        if not tunnels:
-            print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset.{C.END}")
-            rules_content = f"table inet {self.nft_table_name} {{}}\n"
-        else:
-            result = run_command("ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'", shell=True)
-            public_interface = result.stdout.strip() if result and result.returncode == 0 else None
-            if not public_interface:
-                print(f"{C.RED}Error: Could not determine default public interface.{C.END}")
-                return
-
-            prerouting_rules = []
-            postrouting_rules = []
-            unique_foreign_ips = set()
-
-            for tunnel in tunnels.values():
-                foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
-                if ports_str:
-                    prerouting_rules.append(
-                        f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}"
-                    )
-                    prerouting_rules.append(
-                        f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}"
-                    )
-                    unique_foreign_ips.add(foreign_ip)
-
-            for ip in unique_foreign_ips:
-                postrouting_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
-
-            # Correctly format the rules with proper indentation and newlines
-            pr_rules_str = "\n\t\t".join(prerouting_rules)
-            po_rules_str = "\n\t\t".join(postrouting_rules)
-
-            rules_template = [
-                f"table inet {self.nft_table_name} {{",
-                "\tchain prerouting {",
-                "\t\ttype nat hook prerouting priority dstnat; policy accept;",
-                f"\t\t{pr_rules_str}",
-                "\t}",
-                "\tchain postrouting {",
-                "\t\ttype nat hook postrouting priority srcnat; policy accept;",
-                f"\t\t{po_rules_str}",
-                "\t}",
-                "}",
-            ]
-            rules_content = "\n".join(rules_template)
-
-        try:
-            with open(self.rules_file, 'w') as f:
-                f.write(rules_content)
-            if apply_nftables_config() and new_ports_str:
-                print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
-                warning_msg = (f"Remember to open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} "
-                               "in other firewalls (e.g., UFW).{C.END}")
-                print(warning_msg)
-        except IOError as e:
-            print(f"{C.RED}Error writing rules file {self.rules_file}: {e}{C.END}")
-
     def add_tunnel(self):
         """Adds a new direct NAT tunnel."""
         tunnels = load_json_db(self.db_file)
@@ -376,7 +398,11 @@ class DirectTunnelManager:
             return
         tunnels[name] = {'foreign_ip': foreign_ip, 'ports': formatted_ports}
         if save_json_db(self.db_file, tunnels):
-            self.generate_and_apply_rules(new_ports_str=formatted_ports)
+            generate_and_apply_rules()
+            print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
+            warning_msg = (f"Remember to open port(s) {C.GREEN}{formatted_ports}{C.YELLOW} "
+                           "in other firewalls (e.g., UFW).{C.END}")
+            print(warning_msg)
 
     def list_tunnels(self):
         """Lists all configured direct NAT tunnels."""
@@ -424,7 +450,7 @@ class DirectTunnelManager:
             return
         tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': formatted_ports}
         if save_json_db(self.db_file, tunnels):
-            self.generate_and_apply_rules(new_ports_str=formatted_ports)
+            generate_and_apply_rules()
 
     def remove_tunnel(self):
         """Removes a direct NAT tunnel."""
@@ -446,7 +472,7 @@ class DirectTunnelManager:
             return
         del tunnels[tunnel_to_remove]
         if save_json_db(self.db_file, tunnels):
-            self.generate_and_apply_rules()
+            generate_and_apply_rules()
             print(f"\n{C.GREEN}Tunnel '{tunnel_to_remove}' removed.{C.END}")
 
     def main_menu(self):
@@ -465,7 +491,7 @@ class DirectTunnelManager:
                 '2': ("List All Tunnels", self.list_tunnels),
                 '3': ("Edit Tunnel", self.edit_tunnel),
                 '4': ("Remove Tunnel", self.remove_tunnel),
-                '5': ("Re-apply All Rules", self.generate_and_apply_rules),
+                '5': ("Re-apply All Rules", generate_and_apply_rules),
                 '6': ("Return to Main Menu", "exit")
             }
             print(f"{C.GREEN}1. Add New Tunnel")
@@ -531,15 +557,14 @@ def run_temp_server(server_holder):
 
 class ReverseTunnelManager:
     """Manages a WireGuard-based reverse tunnel setup."""
+    DB_FILE = '/etc/reverse_tunnel_manager/tunnels.json'
+    PEERS_DB_FILE = '/etc/reverse_tunnel_manager/peers.json'
 
     def __init__(self):
         self.db_dir = '/etc/reverse_tunnel_manager'
-        self.peers_db_file = os.path.join(self.db_dir, 'peers.json')
-        self.tunnels_db_file = os.path.join(self.db_dir, 'tunnels.json')
-        self.rules_file = os.path.join(NFT_RULES_DIR, 'reverse-tunnel-manager.nft')
-        self.nft_table_name = 'reverse_tunnel_manager_nat'
+        self.peers_db_file = self.PEERS_DB_FILE
+        self.tunnels_db_file = self.DB_FILE
         self.wg_config_file = '/etc/wireguard/wg0.conf'
-        self.manager_name = "Reverse Tunnel Manager"
 
     def get_public_ip(self):
         """Detects the server's public IP address."""
@@ -598,7 +623,7 @@ class ReverseTunnelManager:
         except IOError as e:
             print(f"{C.RED}Failed to write WireGuard config: {e}{C.END}")
             return
-        for f in [self.peers_db_file, self.tunnels_db_file, self.rules_file]:
+        for f in [self.peers_db_file, self.tunnels_db_file, ULTIMATE_RULES_FILE]:
             if os.path.exists(f):
                 os.remove(f)
         run_command(['wg-quick', 'down', 'wg0'])
@@ -701,52 +726,6 @@ class ReverseTunnelManager:
         print(f"\n{C.YELLOW}Note: Tunnels for this peer must be removed manually.{C.END}")
         print(f"\n{C.BOLD}{C.GREEN}Peer '{peer_to_remove_name}' removed successfully.{C.END}")
 
-    def generate_and_apply_rules(self):
-        """Generates nftables rules for all reverse tunnels."""
-        tunnels = load_json_db(self.tunnels_db_file)
-        rules_content = ""
-        if not tunnels:
-            print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset.{C.END}")
-            rules_content = f"table inet {self.nft_table_name} {{}}\n"
-        else:
-            res = run_command("ip -o -4 route show to default | awk '{print $5}'", shell=True)
-            public_interface = res.stdout.strip() if res and res.returncode == 0 else None
-            if not public_interface:
-                print(f"{C.RED}Error: Could not determine public interface.{C.END}")
-                return
-
-            prerouting_rules = []
-            postrouting_rules = []
-            unique_dest_ips = set()
-            for tunnel in tunnels.values():
-                ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
-                prerouting_rules.append(f'iif {public_interface} tcp dport {{ {ports} }} dnat ip to {dest_ip}')
-                prerouting_rules.append(f'iif {public_interface} udp dport {{ {ports} }} dnat ip to {dest_ip}')
-                unique_dest_ips.add(dest_ip)
-            for dest_ip in unique_dest_ips:
-                postrouting_rules.append(f'ip daddr {dest_ip} oif wg0 masquerade')
-
-            pr_rules_str = "\n\t\t".join(prerouting_rules)
-            po_rules_str = "\n\t\t".join(postrouting_rules)
-
-            rules_template = [
-                f"table inet {self.nft_table_name} {{",
-                "\tchain prerouting {",
-                "\t\ttype nat hook prerouting priority dstnat; policy accept;",
-                f"\t\t{pr_rules_str}",
-                "\t}",
-                "\tchain postrouting {",
-                "\t\ttype nat hook postrouting priority srcnat; policy accept;",
-                f"\t\t{po_rules_str}",
-                "\t}",
-                "}",
-            ]
-            rules_content = "\n".join(rules_template)
-
-        with open(self.rules_file, 'w') as f:
-            f.write(rules_content)
-        apply_nftables_config()
-
     def add_tunnel(self):
         """Adds a new port forwarding rule for a peer."""
         peers = load_json_db(self.peers_db_file)
@@ -778,7 +757,7 @@ class ReverseTunnelManager:
             return
         tunnels[name] = {'dest_ip': dest_ip, 'ports': formatted_ports, 'peer_name': selected_peer_name}
         if save_json_db(self.tunnels_db_file, tunnels):
-            self.generate_and_apply_rules()
+            generate_and_apply_rules()
 
     def list_tunnels(self):
         """Lists all configured forwarding rules."""
@@ -826,7 +805,7 @@ class ReverseTunnelManager:
         del tunnels[old_name]
         tunnels[new_name] = {'dest_ip': current['dest_ip'], 'ports': formatted_ports, 'peer_name': current['peer_name']}
         if save_json_db(self.tunnels_db_file, tunnels):
-            self.generate_and_apply_rules()
+            generate_and_apply_rules()
             print(f"{C.GREEN}Rule successfully updated.{C.END}")
 
     def remove_tunnel(self):
@@ -846,7 +825,7 @@ class ReverseTunnelManager:
             name_to_remove = names[int(choice_str) - 1]
             del tunnels[name_to_remove]
             if save_json_db(self.tunnels_db_file, tunnels):
-                self.generate_and_apply_rules()
+                generate_and_apply_rules()
                 print(f"\n{C.GREEN}Rule '{name_to_remove}' removed.{C.END}")
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
@@ -886,7 +865,7 @@ class ReverseTunnelManager:
             print(f"\n{C.YELLOW}--- System ---{C.END}")
             last_key = len(menu)
             menu.update({
-                str(last_key + 1): ("Re-apply All Rules", self.generate_and_apply_rules),
+                str(last_key + 1): ("Re-apply All Rules", generate_and_apply_rules),
                 str(last_key + 2): ("Return to Main Menu", "exit")
             })
             print(f"{C.YELLOW}{last_key + 1}. Re-apply All Rules\n{C.YELLOW}{last_key + 2}. Return to Main Menu{C.END}")
@@ -978,8 +957,7 @@ def uninstall_script():
         INSTALL_PATH,
         '/etc/tunnel_manager',
         '/etc/reverse_tunnel_manager',
-        os.path.join(NFT_RULES_DIR, 'direct-tunnel-manager.nft'),
-        os.path.join(NFT_RULES_DIR, 'reverse-tunnel-manager.nft'),
+        ULTIMATE_RULES_FILE,
         '/etc/wireguard/wg0.conf'
     ]
     for path in paths_to_remove:
@@ -992,8 +970,8 @@ def uninstall_script():
                 print(f"{C.GREEN}Removed {path}.{C.END}")
             except OSError as e:
                 print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
-    # After removing files, apply an empty (or default) config
-    apply_nftables_config()
+    # After removing files, write a final empty ruleset
+    generate_and_apply_rules()
     print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
     return True
 
