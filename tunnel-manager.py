@@ -1,9 +1,9 @@
-#!/usr/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
 Ultimate Tunnel Manager
-Version: 2.0.3
+Version: 2.0.4
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,10 +23,12 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.0.3"
+SCRIPT_VERSION = "2.0.4"
 # URL for the client setup and local installation
-SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
+SCRIPT_URL = "https://raw.githubusercontent.com/Nima768/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
+NFT_RULES_DIR = '/etc/nftables.d'
+MAIN_NFT_CONFIG = '/etc/nftables.conf'
 
 
 # --- Color Codes ---
@@ -64,18 +66,20 @@ def run_command(command, use_sudo=True, capture=True, text=True, shell=False, co
         else:
             command = ['sudo'] + command
     try:
+        # check=False allows us to handle errors manually
         return subprocess.run(
             command,
-            check=True,
+            check=False,
             capture_output=capture,
             text=text,
             shell=shell,
             input=command_input
         )
-    except subprocess.CalledProcessError as e:
-        print(f"\n{C.RED}Error executing command: {command}{C.END}")
-        if e.stderr:
-            print(f"{C.RED}Stderr: {e.stderr.strip()}{C.END}")
+    except FileNotFoundError:
+        print(f"\n{C.RED}Error: Command not found for: {' '.join(command)}{C.END}")
+        return None
+    except Exception as e:
+        print(f"\n{C.RED}An unexpected error occurred with command: {' '.join(command)} ({e}){C.END}")
         return None
 
 
@@ -128,11 +132,13 @@ def ensure_dependencies(packages):
     needs_install = [pkg for pkg, cmd in packages.items() if not shutil.which(cmd)]
     if needs_install:
         print(f"{C.YELLOW}Missing dependencies: {', '.join(needs_install)}. Attempting to install...{C.END}")
-        if run_command(['apt-get', 'update', '-y'], capture=False) is None:
+        update_result = run_command(['apt-get', 'update', '-y'], capture=False)
+        if update_result is None or update_result.returncode != 0:
             print(f"{C.RED}Failed to update package lists.{C.END}")
             return False
         for pkg in needs_install:
-            if run_command(['apt-get', 'install', pkg, '-y'], capture=False) is None:
+            install_result = run_command(['apt-get', 'install', pkg, '-y'], capture=False)
+            if install_result is None or install_result.returncode != 0:
                 print(f"{C.RED}Failed to install {pkg}. Please install it manually.{C.END}")
                 return False
         print(f"{C.GREEN}Dependencies installed successfully.{C.END}")
@@ -142,12 +148,13 @@ def ensure_dependencies(packages):
 def ensure_ip_forwarding():
     """Ensures that IPv4 forwarding is enabled and persists across reboots."""
     result = run_command(['sysctl', 'net.ipv4.ip_forward'], capture=True)
-    if result and 'net.ipv4.ip_forward = 1' in result.stdout:
-        return
+    if result and result.returncode == 0 and 'net.ipv4.ip_forward = 1' in result.stdout:
+        return True
+
     print(f"{C.YELLOW}Enabling IP forwarding...{C.END}")
-    if run_command(['sysctl', '-w', 'net.ipv4.ip_forward=1']) is None:
+    if run_command(['sysctl', '-w', 'net.ipv4.ip_forward=1']).returncode != 0:
         print(f"{C.RED}Failed to enable IP forwarding dynamically.{C.END}")
-        return
+        return False
 
     try:
         with open('/etc/sysctl.conf', 'r+') as f:
@@ -161,86 +168,104 @@ def ensure_ip_forwarding():
                 f.truncate()
         run_command(['sysctl', '-p'])
         print(f"{C.GREEN}IP forwarding enabled persistently.{C.END}")
+        return True
     except IOError as e:
         print(f"{C.RED}Error updating /etc/sysctl.conf: {e}{C.END}")
         print(f"{C.YELLOW}IP forwarding will not be persistent.{C.END}")
+        return False
 
 
-def ensure_nftables_service():
-    """Ensures the nftables service is enabled and running before manipulation."""
-    is_active_cmd = ['systemctl', 'is-active', '--quiet', 'nftables']
-    # Use subprocess.run directly to check return code, not output
-    is_active = subprocess.run(is_active_cmd).returncode == 0
-
-    if is_active:
-        return True  # Service is already running fine
-
-    print(f"{C.YELLOW}nftables service is not active. Attempting to start...{C.END}")
-    is_enabled_cmd = ['systemctl', 'is-enabled', '--quiet', 'nftables']
-    is_enabled = subprocess.run(is_enabled_cmd).returncode == 0
-
-    if not is_enabled:
-        print(f"{C.YELLOW}Service is not enabled, enabling now...{C.END}")
-        if run_command(['systemctl', 'enable', 'nftables']) is None:
-            print(f"{C.RED}Failed to enable nftables.{C.END}")
+def ensure_base_nftables_config():
+    """
+    Ensures the base nftables configuration is sane (dir exists, include line is present).
+    This is a prerequisite for starting the service reliably.
+    """
+    # 1. Ensure the rules directory exists
+    if not os.path.exists(NFT_RULES_DIR):
+        try:
+            os.makedirs(NFT_RULES_DIR, 0o755)
+            print(f"{C.GREEN}Created nftables rules directory: {NFT_RULES_DIR}{C.END}")
+        except OSError as e:
+            print(f"{C.RED}Fatal: Could not create directory {NFT_RULES_DIR}: {e}{C.END}")
             return False
 
-    if run_command(['systemctl', 'start', 'nftables']) is None:
-        print(f"{C.RED}Failed to start nftables service.{C.END}")
-        print(f"{C.YELLOW}Please check the service status with 'systemctl status nftables'.{C.END}")
+    # 2. Ensure the include line is in the main config
+    include_line = f'include "{NFT_RULES_DIR}/*.nft"'
+    if not os.path.exists(MAIN_NFT_CONFIG):
+        print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}")
+        default_config = f"#!/usr/sbin/nft -f\nflush ruleset\n\n{include_line}\n"
+        try:
+            with open(MAIN_NFT_CONFIG, 'w') as f:
+                f.write(default_config)
+        except IOError as e:
+            print(f"{C.RED}Fatal: Could not create default config {MAIN_NFT_CONFIG}: {e}{C.END}")
+            return False
+    else:
+        try:
+            with open(MAIN_NFT_CONFIG, 'r') as f:
+                content = f.read()
+            if include_line not in content:
+                print(f"{C.YELLOW}Adding required include line to {MAIN_NFT_CONFIG}...{C.END}")
+                with open(MAIN_NFT_CONFIG, 'a') as f:
+                    f.write(f"\n# Added by Ultimate Tunnel Manager\n{include_line}\n")
+        except IOError as e:
+            print(f"{C.RED}Fatal: Could not read/write {MAIN_NFT_CONFIG}: {e}{C.END}")
+            return False
+    return True
+
+
+def manage_nftables_service():
+    """Central function to check, reset, enable, and start the nftables service."""
+    # Check if active
+    if run_command(['systemctl', 'is-active', '--quiet', 'nftables']).returncode == 0:
+        return True
+
+    print(f"{C.YELLOW}nftables service is not active.{C.END}")
+
+    # Check if failed, and if so, reset the state
+    if run_command(['systemctl', 'is-failed', '--quiet', 'nftables']).returncode == 0:
+        print(f"{C.YELLOW}Service is in a failed state. Resetting...{C.END}")
+        run_command(['systemctl', 'reset-failed', 'nftables'])
+
+    # Check if enabled
+    if run_command(['systemctl', 'is-enabled', '--quiet', 'nftables']).returncode != 0:
+        print(f"{C.YELLOW}Service is not enabled. Enabling now...{C.END}")
+        if run_command(['systemctl', 'enable', 'nftables']).returncode != 0:
+            print(f"{C.RED}Fatal: Failed to enable nftables service.{C.END}")
+            return False
+
+    # Attempt to start
+    print(f"{C.CYAN}Attempting to start nftables service...{C.END}")
+    if run_command(['systemctl', 'start', 'nftables']).returncode != 0:
+        print(f"{C.RED}Fatal: Failed to start nftables service.{C.END}")
+        print(f"{C.YELLOW}Run 'journalctl -xeu nftables.service' for details.{C.END}")
         return False
 
     print(f"{C.GREEN}nftables service started successfully.{C.END}")
     return True
 
 
-def ensure_include_line(main_nft_config, rules_dir, manager_name):
-    """Ensures the main nftables.conf includes the rules directory."""
-    include_line = f'include "{rules_dir}/*.nft"'
-    if not os.path.exists(main_nft_config):
-        print(f"{C.YELLOW}Main config {main_nft_config} not found. Creating a default config...{C.END}")
-        default_config = f"#!/usr/sbin/nft -f\nflush ruleset\n\n# Added by {manager_name}\n{include_line}\n"
-        try:
-            with open(main_nft_config, 'w') as f:
-                f.write(default_config)
-            print(f"{C.GREEN}Default config created successfully.{C.END}")
-            return True
-        except IOError as e:
-            print(f"{C.RED}Failed to create default config: {e}{C.END}")
-            return False
-
-    try:
-        with open(main_nft_config, 'r') as f:
-            if include_line in f.read():
-                return True
-    except IOError as e:
-        print(f"{C.RED}Could not read {main_nft_config}: {e}{C.END}")
-        return False
-
-    print(f"\n{C.YELLOW}The main nftables config is missing the required include line.{C.END}")
-    try:
-        with open(main_nft_config, 'a') as f:
-            f.write(f"\n# Added by {manager_name}\n{include_line}\n")
-        print(f"{C.GREEN}Successfully added include line to {main_nft_config}.{C.END}")
-        return True
-    except IOError as e:
-        print(f"{C.RED}Error: Could not write to {main_nft_config}. Please add the line manually: {e}{C.END}")
-        print(f"    {C.GREEN}{include_line}{C.END}")
-        return False
-
-
 def apply_nftables_config():
-    """Reloads or restarts the nftables service to apply new rules."""
-    print(f"{C.CYAN}Applying changes to nftables service...{C.END}")
-    if run_command(['systemctl', 'reload', 'nftables']) is not None:
-        print(f"{C.GREEN}nftables reloaded successfully.{C.END}")
-        return True
-    print(f"{C.YELLOW}Reload failed, attempting to restart...{C.END}")
-    if run_command(['systemctl', 'restart', 'nftables']) is not None:
-        print(f"{C.GREEN}nftables restarted successfully.{C.END}")
-        return True
-    print(f"{C.RED}Failed to apply nftables rules. Check 'systemctl status nftables'.{C.END}")
-    return False
+    """Validates syntax and then applies the new nftables configuration."""
+    # 1. Validate syntax before attempting to load
+    print(f"{C.CYAN}Checking nftables configuration syntax...{C.END}")
+    syntax_check = run_command(['nft', '--check', '--file', MAIN_NFT_CONFIG])
+    if syntax_check.returncode != 0:
+        print(f"{C.RED}Error: nftables configuration check failed!{C.END}")
+        print(f"{C.YELLOW}The service was NOT reloaded to prevent a crash.{C.END}")
+        if syntax_check.stderr:
+            print(f"{C.RED}Details: {syntax_check.stderr.strip()}{C.END}")
+        return False
+
+    print(f"{C.GREEN}Syntax OK. Applying changes to nftables service...{C.END}")
+    # 2. Use reload-or-restart for robustness
+    apply_cmd = run_command(['systemctl', 'reload-or-restart', 'nftables'])
+    if apply_cmd.returncode != 0:
+        print(f"{C.RED}Failed to apply nftables rules.{C.END}")
+        return False
+
+    print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
+    return True
 
 
 def load_json_db(db_file):
@@ -280,76 +305,62 @@ class DirectTunnelManager:
 
     def __init__(self):
         self.db_file = '/etc/tunnel_manager/tunnels.json'
-        self.rules_file = '/etc/nftables.d/direct-tunnel-manager.nft'
+        self.rules_file = os.path.join(NFT_RULES_DIR, 'direct-tunnel-manager.nft')
         self.nft_table_name = 'direct_tunnel_manager_nat'
-        self.main_nft_config = '/etc/nftables.conf'
-        self.rules_dir = '/etc/nftables.d'
         self.manager_name = "Direct Tunnel Manager"
 
     def check_port_conflicts(self, ports_to_check, tunnels, tunnel_to_ignore=None):
         """Checks for port conflicts against system services and other tunnels."""
-        # 1. Check against system ports
         system_used_ports = set()
         for proto_flag in ['-tlnp', '-ulnp']:
             result = run_command(['ss', proto_flag], capture=True)
-            if result:
+            if result and result.returncode == 0:
                 for line in result.stdout.splitlines()[1:]:
                     match = re.search(r':(\d+)\s', line)
                     if match:
                         system_used_ports.add(int(match.group(1)))
-
         system_conflicts = ports_to_check.intersection(system_used_ports)
         if system_conflicts:
             ports = sorted(list(system_conflicts))
             print(f"{C.RED}Error: Port(s) {ports} are in use by another service.{C.END}")
             return False
-
-        # 2. Check against other tunnels
         other_tunnel_ports = set()
         for name, details in tunnels.items():
             if name != tunnel_to_ignore:
                 _, ports = parse_ports(details.get('ports', ''))
                 if ports:
                     other_tunnel_ports.update(ports)
-
         tunnel_conflicts = ports_to_check.intersection(other_tunnel_ports)
         if tunnel_conflicts:
             ports = sorted(list(tunnel_conflicts))
             print(f"{C.RED}Error: Port(s) {ports} are used by another tunnel.{C.END}")
             return False
-
         return True
 
-    def generate_and_apply_rules(self):
+    def generate_and_apply_rules(self, new_ports_str=None):
         """Generates the nftables rules file and reloads the service."""
-        if not ensure_include_line(self.main_nft_config, self.rules_dir, self.manager_name):
-            return
-
         tunnels = load_json_db(self.db_file)
         if not tunnels:
             if os.path.exists(self.rules_file):
-                run_command(['rm', self.rules_file])
+                run_command(['rm', '-f', self.rules_file])
                 print(f"{C.YELLOW}No tunnels configured. Removing old rules file.{C.END}")
             apply_nftables_config()
             return
 
         result = run_command("ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'", shell=True)
-        public_interface = result.stdout.strip() if result else None
+        public_interface = result.stdout.strip() if result and result.returncode == 0 else None
         if not public_interface:
             print(f"{C.RED}Error: Could not determine default public interface.{C.END}")
             return
 
         prerouting_rules = []
-        unique_foreign_ips = set()
-
+        postrouting_rules = []
         for tunnel in tunnels.values():
             foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
             if ports_str:
                 prerouting_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
                 prerouting_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
-                unique_foreign_ips.add(foreign_ip)
-
-        postrouting_rules = [f"ip daddr {ip} oif {public_interface} masquerade" for ip in unique_foreign_ips]
+                postrouting_rules.append(f"ip daddr {foreign_ip} oif {public_interface} masquerade")
 
         rules_content = [
             f"# NAT rules generated by {self.manager_name} v{SCRIPT_VERSION}",
@@ -360,14 +371,16 @@ class DirectTunnelManager:
             "\t}",
             "\tchain postrouting {",
             "\t\ttype nat hook postrouting priority srcnat; policy accept;",
-            "\t\t" + "\n\t\t".join(postrouting_rules),
+            "\t\t" + "\n\t\t".join(sorted(list(set(postrouting_rules)))),
             "\t}",
             "}",
         ]
         try:
             with open(self.rules_file, 'w') as f:
                 f.write("\n".join(rules_content))
-            apply_nftables_config()
+            if apply_nftables_config() and new_ports_str:
+                print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
+                print(f"Remember to open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} in other firewalls (e.g., UFW).{C.END}")
         except IOError as e:
             print(f"{C.RED}Error writing rules file {self.rules_file}: {e}{C.END}")
 
@@ -375,32 +388,23 @@ class DirectTunnelManager:
         """Adds a new direct NAT tunnel."""
         tunnels = load_json_db(self.db_file)
         name = input(f"{C.CYAN}Enter a unique name for the tunnel: {C.END}").strip()
-        if not name:
-            print(f"{C.RED}Error: Name cannot be empty.{C.END}")
+        if not name or name in tunnels:
+            print(f"{C.RED}Error: Name is empty or already exists.{C.END}")
             return
-        if name in tunnels:
-            print(f"{C.RED}Error: A tunnel with this name already exists.{C.END}")
-            return
-
         foreign_ip = input(f"{C.CYAN}Enter the destination server IP: {C.END}").strip()
         if not is_valid_ip(foreign_ip):
             print(f"{C.RED}Error: Invalid IP address format.{C.END}")
             return
-
         ports_str = input(f"{C.CYAN}Enter ports to forward (e.g., 80,443,1000-2000): {C.END}").strip()
         formatted_ports, new_ports_set = parse_ports(ports_str)
         if not new_ports_set:
             print(f"{C.RED}Error: Invalid or empty port format specified.{C.END}")
             return
-
         if not self.check_port_conflicts(new_ports_set, tunnels):
             return
-
         tunnels[name] = {'foreign_ip': foreign_ip, 'ports': formatted_ports}
         if save_json_db(self.db_file, tunnels):
-            self.generate_and_apply_rules()
-            print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
-            print(f"Remember to open port(s) {C.GREEN}{formatted_ports}{C.YELLOW} in your main firewall.{C.END}")
+            self.generate_and_apply_rules(new_ports_str=formatted_ports)
 
     def list_tunnels(self):
         """Lists all configured direct NAT tunnels."""
@@ -427,36 +431,28 @@ class DirectTunnelManager:
             print(f"{C.YELLOW}{i}. {name}{C.END}")
         try:
             choice_str = input(f"\n{C.CYAN}Enter number to edit (0 to cancel): {C.END}").strip()
-            if not choice_str:
+            if not choice_str or int(choice_str) == 0:
                 return
-            choice = int(choice_str)
-            if choice == 0:
-                return
-            tunnel_to_edit = tunnel_names[choice - 1]
+            tunnel_to_edit = tunnel_names[int(choice_str) - 1]
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
             return
-
         current = tunnels[tunnel_to_edit]
         print(f"\nEditing tunnel: {C.BOLD}{tunnel_to_edit}{C.END} (Press Enter to keep current value)")
-
         new_ip = input(f"  Enter new destination IP [{current['foreign_ip']}]: ").strip() or current['foreign_ip']
         if not is_valid_ip(new_ip):
             print(f"{C.RED}Error: Invalid IP address format.{C.END}")
             return
-
         new_ports_str = input(f"  Enter new ports [{current['ports']}]: ").strip() or current['ports']
         formatted_ports, new_ports_set = parse_ports(new_ports_str)
         if not new_ports_set:
             print(f"{C.RED}Error: Invalid or empty port format specified.{C.END}")
             return
-
         if not self.check_port_conflicts(new_ports_set, tunnels, tunnel_to_ignore=tunnel_to_edit):
             return
-
         tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': formatted_ports}
         if save_json_db(self.db_file, tunnels):
-            self.generate_and_apply_rules()
+            self.generate_and_apply_rules(new_ports_str=formatted_ports)
 
     def remove_tunnel(self):
         """Removes a direct NAT tunnel."""
@@ -470,16 +466,12 @@ class DirectTunnelManager:
             print(f"{C.YELLOW}{i}. {name}{C.END}")
         try:
             choice_str = input(f"\n{C.CYAN}Enter number to remove (0 to cancel): {C.END}").strip()
-            if not choice_str:
+            if not choice_str or int(choice_str) == 0:
                 return
-            choice = int(choice_str)
-            if choice == 0:
-                return
-            tunnel_to_remove = tunnel_names[choice - 1]
+            tunnel_to_remove = tunnel_names[int(choice_str) - 1]
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
             return
-
         del tunnels[tunnel_to_remove]
         if save_json_db(self.db_file, tunnels):
             self.generate_and_apply_rules()
@@ -487,11 +479,12 @@ class DirectTunnelManager:
 
     def main_menu(self):
         """The main menu loop for the Direct Tunnel Manager."""
-        ensure_dependencies({'nftables': 'nft'})
-        ensure_ip_forwarding()
-        if not ensure_nftables_service():
+        # This setup is critical and must pass before showing the menu
+        if not ensure_base_nftables_config() or not manage_nftables_service():
             press_enter_to_continue()
             return
+        ensure_dependencies({'nftables': 'nft'})
+        ensure_ip_forwarding()
 
         while True:
             clear_screen()
@@ -511,7 +504,6 @@ class DirectTunnelManager:
             print(f"{C.CYAN}5. Re-apply All Rules")
             print(f"{C.CYAN}6. Return to Main Menu{C.END}")
             choice = input("\nEnter your choice: ").strip()
-
             if choice in menu:
                 action = menu[choice][1]
                 if action == "exit":
@@ -526,7 +518,6 @@ class DirectTunnelManager:
 # ############################################################################
 # --- REVERSE WIREGUARD TUNNEL MANAGER ---
 # ############################################################################
-# Global vars for the callback server
 RECEIVED_KEY = None
 
 
@@ -540,7 +531,6 @@ class KeyRegistrationHandler(BaseHTTPRequestHandler):
                 post_data = self.rfile.read(content_length)
                 data = json.loads(post_data)
                 pubkey = data.get('pubkey')
-                # Basic validation for a WireGuard public key
                 if pubkey and re.match(r'^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$', pubkey):
                     RECEIVED_KEY = pubkey
                     self.send_response(200)
@@ -575,9 +565,7 @@ class ReverseTunnelManager:
         self.db_dir = '/etc/reverse_tunnel_manager'
         self.peers_db_file = os.path.join(self.db_dir, 'peers.json')
         self.tunnels_db_file = os.path.join(self.db_dir, 'tunnels.json')
-        self.rules_file = '/etc/nftables.d/reverse-tunnel-manager.nft'
-        self.main_nft_config = '/etc/nftables.conf'
-        self.rules_dir = '/etc/nftables.d'
+        self.rules_file = os.path.join(NFT_RULES_DIR, 'reverse-tunnel-manager.nft')
         self.nft_table_name = 'reverse_tunnel_manager_nat'
         self.wg_config_file = '/etc/wireguard/wg0.conf'
         self.manager_name = "Reverse Tunnel Manager"
@@ -587,7 +575,7 @@ class ReverseTunnelManager:
         print(f"{C.CYAN}Detecting public IP...{C.END}")
         for service in ["ifconfig.me/ip", "api.ipify.org", "icanhazip.com"]:
             result = run_command(['curl', '-s', '--connect-timeout', '5', service], use_sudo=False)
-            if result and result.stdout and is_valid_ip(result.stdout.strip()):
+            if result and result.returncode == 0 and is_valid_ip(result.stdout.strip()):
                 ip = result.stdout.strip()
                 print(f"{C.GREEN}Detected public IP: {ip}{C.END}")
                 return ip
@@ -608,9 +596,7 @@ class ReverseTunnelManager:
             next_octet = 2
             while next_octet in used_octets:
                 next_octet += 1
-            if next_octet > 254:
-                return None
-            return f"10.0.0.{next_octet}"
+            return f"10.0.0.{next_octet}" if next_octet <= 254 else None
         except IOError as e:
             print(f"{C.RED}Error reading WireGuard config: {e}{C.END}")
             return None
@@ -625,18 +611,13 @@ class ReverseTunnelManager:
                 return
         if not ensure_dependencies({'wireguard': 'wg'}):
             return
-
         privkey_res = run_command(['wg', 'genkey'], use_sudo=False)
-        if not privkey_res:
+        if not privkey_res or privkey_res.returncode != 0:
             return
         server_privkey = privkey_res.stdout.strip()
-
         wg_conf = (
-            "[Interface]\n"
-            "# Relay Server Config\n"
-            f"PrivateKey = {server_privkey}\n"
-            "Address = 10.0.0.1/24\n"
-            "ListenPort = 51820\n"
+            f"[Interface]\n# Relay Server Config\nPrivateKey = {server_privkey}\n"
+            "Address = 10.0.0.1/24\nListenPort = 51820\n"
         )
         os.makedirs(os.path.dirname(self.wg_config_file), exist_ok=True)
         try:
@@ -646,16 +627,13 @@ class ReverseTunnelManager:
         except IOError as e:
             print(f"{C.RED}Failed to write WireGuard config: {e}{C.END}")
             return
-
         for f in [self.peers_db_file, self.tunnels_db_file, self.rules_file]:
             if os.path.exists(f):
                 os.remove(f)
-
         run_command(['wg-quick', 'down', 'wg0'])
         run_command(['wg-quick', 'up', 'wg0'])
         run_command(['systemctl', 'enable', 'wg-quick@wg0'])
-        print(f"\n{C.BOLD}{C.GREEN}--- Relay Setup Complete ---{C.END}")
-        print("You can now add new peer servers.")
+        print(f"\n{C.BOLD}{C.GREEN}--- Relay Setup Complete ---{C.END}\nYou can now add new peer servers.")
 
     def add_new_peer(self):
         """Guides the user through adding a new WireGuard peer."""
@@ -663,32 +641,27 @@ class ReverseTunnelManager:
         RECEIVED_KEY = None
         clear_screen()
         print(f"{C.HEADER}--- Add New Peer Server ---{C.END}")
-
         next_ip = self.get_next_available_ip()
         if not next_ip:
             print(f"{C.RED}Error: Could not assign a new IP. Subnet may be full.{C.END}")
             return
         print(f"{C.CYAN}Assigning new peer the IP address: {next_ip}{C.END}")
-
         server_pubkey_res = run_command(['wg', 'show', 'wg0', 'public-key'])
-        if not server_pubkey_res:
+        if not server_pubkey_res or server_pubkey_res.returncode != 0:
             print(f"{C.RED}Could not get WireGuard public key.{C.END}")
             return
         server_pubkey = server_pubkey_res.stdout.strip()
         server_public_ip = self.get_public_ip()
         if not server_public_ip:
             return
-
         server_holder = []
         server_thread = threading.Thread(target=run_temp_server, args=(server_holder,))
         server_thread.daemon = True
         server_thread.start()
         time.sleep(1)
-
         if RECEIVED_KEY == "SERVER_ERROR":
             print(f"{C.RED}Could not start registration server on port 58080. Is it in use?{C.END}")
             return
-
         callback_url = f"http://{server_public_ip}:58080/register"
         setup_cmd = (
             f"curl -fsSL \"{SCRIPT_URL}?cb=$(date +%s)\" | sudo python3 - setup_client "
@@ -699,30 +672,22 @@ class ReverseTunnelManager:
         print("Run this command on the new peer. This script will wait for 2 minutes.\n")
         print(f"{C.CYAN}{setup_cmd}{C.END}\n")
         print(f"{C.YELLOW}Waiting for new peer to register...{C.END}")
-
         for _ in range(120):
             if RECEIVED_KEY:
                 break
             time.sleep(1)
         if server_holder:
             server_holder[0].shutdown()
-
         if not RECEIVED_KEY or RECEIVED_KEY == "SERVER_ERROR":
             print(f"\n{C.RED}Timeout or server error. No key received.{C.END}")
             return
-
-        peer_name = input("Enter a descriptive name for this new peer (e.g., web-server-1): ").strip()
-        if not peer_name:
-            peer_name = f"Peer-{next_ip}"
-
+        peer_name = input("Enter a descriptive name for this new peer (e.g., web-server-1): ").strip() or f"Peer-{next_ip}"
         peer_conf = f"\n[Peer]\n# {peer_name}\nPublicKey = {RECEIVED_KEY}\nAllowedIPs = {next_ip}/32\n"
         with open(self.wg_config_file, 'a') as f:
             f.write(peer_conf)
-
         peers = load_json_db(self.peers_db_file)
         peers[peer_name] = {'ip': next_ip, 'pubkey': RECEIVED_KEY}
         save_json_db(self.peers_db_file, peers)
-
         run_command(['wg', 'set', 'wg0', 'peer', RECEIVED_KEY, 'allowed-ips', f'{next_ip}/32'])
         print(f"\n{C.BOLD}{C.GREEN}--- New Peer '{peer_name}' Added Successfully ---{C.END}")
 
@@ -736,21 +701,15 @@ class ReverseTunnelManager:
         peer_names = sorted(list(peers.keys()))
         for i, name in enumerate(peer_names, 1):
             print(f"{C.YELLOW}{i}. {name} ({peers[name]['ip']}){C.END}")
-
         try:
             choice_str = input(f"\nEnter number to remove (0 to cancel): {C.END}").strip()
-            if not choice_str:
+            if not choice_str or int(choice_str) == 0:
                 return
-            choice = int(choice_str)
-            if choice == 0:
-                return
-            peer_to_remove_name = peer_names[choice - 1]
+            peer_to_remove_name = peer_names[int(choice_str) - 1]
             peer_to_remove = peers[peer_to_remove_name]
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
             return
-
-        # 1. Remove from wg config file
         with open(self.wg_config_file, 'r') as f:
             lines = f.readlines()
         with open(self.wg_config_file, 'w') as f:
@@ -763,61 +722,42 @@ class ReverseTunnelManager:
                 if not skip:
                     f.write(line)
         print(f"{C.GREEN}Removed peer from WireGuard config file.{C.END}")
-
-        # 2. Remove from live interface
         run_command(['wg', 'set', 'wg0', 'peer', peer_to_remove['pubkey'], 'remove'])
         print(f"{C.GREEN}Removed peer from live WireGuard interface.{C.END}")
-
-        # 3. Remove from peers DB
         del peers[peer_to_remove_name]
         save_json_db(self.peers_db_file, peers)
-
-        print(f"\n{C.YELLOW}Note: Tunnels pointing to this peer's IP ({peer_to_remove['ip']}) are now orphaned.{C.END}")
-        print(f"{C.YELLOW}Please edit or remove them from the 'Forwarding Rules' menu.{C.END}")
+        print(f"\n{C.YELLOW}Note: Tunnels for this peer must be removed manually.{C.END}")
         print(f"\n{C.BOLD}{C.GREEN}Peer '{peer_to_remove_name}' removed successfully.{C.END}")
 
     def generate_and_apply_rules(self):
         """Generates nftables rules for all reverse tunnels."""
-        if not ensure_include_line(self.main_nft_config, self.rules_dir, self.manager_name):
-            return
-
         tunnels = load_json_db(self.tunnels_db_file)
         if not tunnels:
             if os.path.exists(self.rules_file):
-                run_command(['rm', self.rules_file])
+                run_command(['rm', '-f', self.rules_file])
             apply_nftables_config()
             return
-
         res = run_command("ip -o -4 route show to default | awk '{print $5}'", shell=True)
-        public_interface = res.stdout.strip() if res else None
+        public_interface = res.stdout.strip() if res and res.returncode == 0 else None
         if not public_interface:
             print(f"{C.RED}Error: Could not determine public interface.{C.END}")
             return
-
         prerouting_rules = []
         postrouting_rules = []
-        unique_dest_ips = set()
-
         for tunnel in tunnels.values():
-            ports = tunnel["ports"]
-            dest_ip = tunnel["dest_ip"]
+            ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
             prerouting_rules.append(f'iif "{public_interface}" tcp dport {{ {ports} }} dnat ip to {dest_ip}')
             prerouting_rules.append(f'iif "{public_interface}" udp dport {{ {ports} }} dnat ip to {dest_ip}')
-            unique_dest_ips.add(dest_ip)
-
-        for dest_ip in unique_dest_ips:
             postrouting_rules.append(f'ip daddr {dest_ip} oif "wg0" masquerade')
 
         rules_content = [
             f"# Rules generated by {self.manager_name} v{SCRIPT_VERSION}",
             f"table inet {self.nft_table_name} {{",
-            "\tchain prerouting {",
-            "\t\ttype nat hook prerouting priority dstnat; policy accept;",
+            "\tchain prerouting { type nat hook prerouting priority dstnat; policy accept; }",
             "\t\t" + "\n\t\t".join(prerouting_rules),
             "\t}",
-            "\tchain postrouting {",
-            "\t\ttype nat hook postrouting priority srcnat; policy accept;",
-            "\t\t" + "\n\t\t".join(postrouting_rules),
+            "\tchain postrouting { type nat hook postrouting priority srcnat; policy accept; }",
+            "\t\t" + "\n\t\t".join(sorted(list(set(postrouting_rules)))),
             "\t}",
             "}",
         ]
@@ -831,36 +771,29 @@ class ReverseTunnelManager:
         if not peers:
             print(f"\n{C.RED}No peer servers are configured. Please add one first.{C.END}")
             return
-
         peer_names = list(peers.keys())
         print("\n--- Select a Peer Server to Forward To ---")
         for i, name in enumerate(peer_names, 1):
             print(f"{C.YELLOW}{i}. {name} ({peers[name]['ip']}){C.END}")
         try:
             choice_str = input("\nEnter number for the destination server (0 to cancel): ").strip()
-            if not choice_str:
+            if not choice_str or int(choice_str) == 0:
                 return
-            choice = int(choice_str)
-            if choice == 0:
-                return
-            selected_peer_name = peer_names[choice - 1]
+            selected_peer_name = peer_names[int(choice_str) - 1]
             dest_ip = peers[selected_peer_name]['ip']
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
             return
-
         tunnels = load_json_db(self.tunnels_db_file)
         name = input(f"\nEnter a unique name for this rule (e.g., {selected_peer_name}-web): ").strip()
         if not name or name in tunnels:
             print(f"{C.RED}Error: Name is empty or already exists.{C.END}")
             return
-
         ports_str = input(f"Enter public ports to forward to '{selected_peer_name}' (e.g., 80, 443): ").strip()
         formatted_ports, _ = parse_ports(ports_str)
         if not formatted_ports:
             print(f"{C.RED}Error: Invalid port format.{C.END}")
             return
-
         tunnels[name] = {'dest_ip': dest_ip, 'ports': formatted_ports, 'peer_name': selected_peer_name}
         if save_json_db(self.tunnels_db_file, tunnels):
             self.generate_and_apply_rules()
@@ -885,36 +818,29 @@ class ReverseTunnelManager:
         if not tunnels:
             print(f"\n{C.YELLOW}No rules to edit.{C.END}")
             return
-
         names = sorted(list(tunnels.keys()))
         print("\n--- Select a Rule to Edit ---")
         for i, name in enumerate(names, 1):
             print(f"{C.YELLOW}{i}. {name}{C.END}")
         try:
             choice_str = input(f"\nEnter number to edit (0 to cancel): {C.END}").strip()
-            if not choice_str:
+            if not choice_str or int(choice_str) == 0:
                 return
-            choice = int(choice_str)
-            if choice == 0:
-                return
-            old_name = names[choice - 1]
+            old_name = names[int(choice_str) - 1]
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
             return
-
         current = tunnels[old_name]
         print(f"\nEditing '{C.BOLD}{old_name}{C.END}'. Press Enter to keep current value.")
         new_name = input(f"  Enter new name [{old_name}]: ").strip() or old_name
         if new_name != old_name and new_name in tunnels:
             print(f"{C.RED}Error: Rule name '{new_name}' already exists.{C.END}")
             return
-
         new_ports_str = input(f"  Enter new ports [{current['ports']}]: ").strip() or current['ports']
         formatted_ports, _ = parse_ports(new_ports_str)
         if not formatted_ports:
             print(f"{C.RED}Error: Invalid port format.{C.END}")
             return
-
         del tunnels[old_name]
         tunnels[new_name] = {'dest_ip': current['dest_ip'], 'ports': formatted_ports, 'peer_name': current['peer_name']}
         if save_json_db(self.tunnels_db_file, tunnels):
@@ -933,32 +859,28 @@ class ReverseTunnelManager:
             print(f"{C.YELLOW}{i}. {name}{C.END}")
         try:
             choice_str = input(f"\nEnter number to remove (0 to cancel): {C.END}").strip()
-            if not choice_str:
+            if not choice_str or int(choice_str) == 0:
                 return
-            choice = int(choice_str)
-            if choice > 0 and choice <= len(names):
-                name_to_remove = names[choice - 1]
-                del tunnels[name_to_remove]
-                if save_json_db(self.tunnels_db_file, tunnels):
-                    self.generate_and_apply_rules()
-                    print(f"\n{C.GREEN}Rule '{name_to_remove}' removed.{C.END}")
+            name_to_remove = names[int(choice_str) - 1]
+            del tunnels[name_to_remove]
+            if save_json_db(self.tunnels_db_file, tunnels):
+                self.generate_and_apply_rules()
+                print(f"\n{C.GREEN}Rule '{name_to_remove}' removed.{C.END}")
         except (ValueError, IndexError):
             print(f"{C.RED}Invalid selection.{C.END}")
 
     def main_menu(self):
         """The main menu loop for the Reverse Tunnel Manager."""
         deps = {'nftables': 'nft', 'curl': 'curl', 'wireguard': 'wg', 'gawk': 'awk'}
-        ensure_dependencies(deps)
-        ensure_ip_forwarding()
-        if not ensure_nftables_service():
+        if not ensure_base_nftables_config() or not manage_nftables_service():
             press_enter_to_continue()
             return
-
+        ensure_dependencies(deps)
+        ensure_ip_forwarding()
         while True:
             clear_screen()
             print(f"{C.HEADER}===== Reverse Tunnel Manager {SCRIPT_VERSION} ====={C.END}")
             is_setup = os.path.exists(self.wg_config_file)
-
             if not is_setup:
                 menu = {'1': ("Initial Relay Setup (Run this first!)", self.initial_relay_setup)}
                 print(f"{C.YELLOW}WireGuard relay has not been set up yet.{C.END}")
@@ -969,8 +891,7 @@ class ReverseTunnelManager:
                     '1': ("Add New Peer Server", self.add_new_peer),
                     '2': ("Remove Peer Server", self.remove_peer)
                 }
-                print(f"{C.BLUE}1. Add New Peer Server")
-                print(f"{C.RED}2. Remove Peer Server{C.END}")
+                print(f"{C.BLUE}1. Add New Peer Server\n{C.RED}2. Remove Peer Server{C.END}")
                 print(f"\n{C.GREEN}--- Forwarding Rules ---{C.END}")
                 menu.update({
                     '3': ("Add New Forwarding Rule", self.add_tunnel),
@@ -978,20 +899,15 @@ class ReverseTunnelManager:
                     '5': ("Edit Forwarding Rule", self.edit_tunnel),
                     '6': ("Remove Forwarding Rule", self.remove_tunnel)
                 })
-                print(f"{C.GREEN}3. Add New Forwarding Rule")
-                print(f"{C.CYAN}4. List All Forwarding Rules")
-                print(f"{C.YELLOW}5. Edit Forwarding Rule")
-                print(f"{C.RED}6. Remove Forwarding Rule{C.END}")
-
+                print(f"{C.GREEN}3. Add New Rule\n{C.CYAN}4. List Rules\n"
+                      f"{C.YELLOW}5. Edit Rule\n{C.RED}6. Remove Rule{C.END}")
             print(f"\n{C.YELLOW}--- System ---{C.END}")
             last_key = len(menu)
             menu.update({
                 str(last_key + 1): ("Re-apply All Rules", self.generate_and_apply_rules),
                 str(last_key + 2): ("Return to Main Menu", "exit")
             })
-            print(f"{C.YELLOW}{last_key + 1}. Re-apply All Rules")
-            print(f"{C.YELLOW}{last_key + 2}. Return to Main Menu{C.END}")
-
+            print(f"{C.YELLOW}{last_key + 1}. Re-apply All Rules\n{C.YELLOW}{last_key + 2}. Return to Main Menu{C.END}")
             choice = input("\nEnter your choice: ").strip()
             if choice in menu:
                 action = menu[choice][1]
@@ -1005,51 +921,37 @@ class ReverseTunnelManager:
 
 
 def setup_wireguard_client(server_pubkey, server_endpoint, callback_url, client_ip):
-    """
-    This function is executed on the client machine via the one-line setup command.
-    """
+    """Executed on the client machine via the one-line setup command."""
     print(f"{C.HEADER}--- Setting up WireGuard Client for Reverse Tunnel ---{C.END}")
     if os.geteuid() != 0:
         sys.exit(f"{C.RED}This action requires root privileges. Please run with sudo.{C.END}")
     if not ensure_dependencies({'wireguard': 'wg', 'curl': 'curl'}):
         sys.exit(1)
-
     print(f"{C.YELLOW}Cleaning up any previous configurations...{C.END}")
     run_command(['wg-quick', 'down', 'wg0'])
     wg_config_file = '/etc/wireguard/wg0.conf'
     if os.path.exists(wg_config_file):
         os.remove(wg_config_file)
-
-    client_privkey = run_command(['wg', 'genkey'], use_sudo=False).stdout.strip()
-    client_pubkey = run_command(['wg', 'pubkey'], command_input=client_privkey).stdout.strip()
+    privkey = run_command(['wg', 'genkey'], use_sudo=False).stdout.strip()
+    pubkey = run_command(['wg', 'pubkey'], command_input=privkey).stdout.strip()
     wg_conf = (
-        "[Interface]\n"
-        "# Client Server Config\n"
-        f"PrivateKey = {client_privkey}\n"
-        f"Address = {client_ip}/24\n\n"
-        "[Peer]\n"
-        "# Relay Server\n"
-        f"PublicKey = {server_pubkey}\n"
-        f"Endpoint = {server_endpoint}\n"
-        "AllowedIPs = 10.0.0.0/24\n"
-        "PersistentKeepalive = 25\n"
+        f"[Interface]\n# Client Server Config\nPrivateKey = {privkey}\n"
+        f"Address = {client_ip}/24\n\n[Peer]\n# Relay Server\n"
+        f"PublicKey = {server_pubkey}\nEndpoint = {server_endpoint}\n"
+        "AllowedIPs = 10.0.0.0/24\nPersistentKeepalive = 25\n"
     )
     os.makedirs(os.path.dirname(wg_config_file), exist_ok=True)
     with open(wg_config_file, 'w') as f:
         f.write(wg_conf)
     os.chmod(wg_config_file, 0o600)
     print(f"{C.GREEN}Generated WireGuard config with IP {client_ip}.{C.END}")
-
     print(f"{C.CYAN}Registering public key with relay server...{C.END}")
-    payload = json.dumps({'pubkey': client_pubkey})
+    payload = json.dumps({'pubkey': pubkey})
     cmd = ['curl', '-s', '-X', 'POST', '-H', 'Content-Type: application/json', '--data-raw', payload, callback_url]
     reg_result = run_command(cmd, use_sudo=False)
-
-    if not reg_result or reg_result.stdout.strip() != 'OK':
+    if not reg_result or reg_result.returncode != 0 or reg_result.stdout.strip() != 'OK':
         print(f"\n{C.RED}--- FAILED TO REGISTER WITH RELAY ---{C.END}")
-        print("Please check the relay server output and network connectivity.")
         sys.exit(1)
-
     print(f"{C.GREEN}Registration successful!{C.END}")
     run_command(['wg-quick', 'up', 'wg0'])
     run_command(['systemctl', 'enable', 'wg-quick@wg0'])
@@ -1067,45 +969,37 @@ def install_script():
         print(f"{C.YELLOW}Script is already installed at {INSTALL_PATH}.{C.END}")
         choice = input("Do you want to re-install/update? (y/N): ").lower().strip()
         if choice != 'y':
-            print("Installation aborted.")
             return
-
     print(f"{C.YELLOW}Installing to {INSTALL_PATH}...{C.END}")
     cmd_dl = ['curl', '-fsSL', SCRIPT_URL, '-o', INSTALL_PATH]
-    if run_command(cmd_dl) is None:
+    if run_command(cmd_dl).returncode != 0:
         print(f"{C.RED}Installation failed: Could not download the script.{C.END}")
         return
-
-    cmd_perm = ['chmod', '755', INSTALL_PATH]
-    if run_command(cmd_perm) is None:
+    if run_command(['chmod', '755', INSTALL_PATH]).returncode != 0:
         print(f"{C.RED}Installation failed: Could not set permissions.{C.END}")
         return
-
     install_cmd = f"sudo {os.path.basename(INSTALL_PATH)}"
     print(f"{C.GREEN}Installation successful! You can now run with: {C.BOLD}{install_cmd}{C.END}")
 
 
 def uninstall_script():
     """Removes the script and all related configurations from the system."""
-    print(f"{C.RED}{C.BOLD}This will remove the script, all databases (direct and reverse), "
-          "nftables rules, and the WireGuard config.{C.END}")
+    print(f"{C.RED}{C.BOLD}This will remove the script, all databases, nftables rules, "
+          f"and the WireGuard config.{C.END}")
     choice = input(f"{C.RED}Are you sure you want to continue? (y/N): {C.END}")
     if choice.lower().strip() != 'y':
         print("Uninstall aborted.")
         return
-
     print(f"{C.YELLOW}Stopping WireGuard interface...{C.END}")
     run_command(['wg-quick', 'down', 'wg0'])
-
     paths_to_remove = [
         INSTALL_PATH,
-        '/etc/tunnel_manager',  # Direct tunnel configs
-        '/etc/reverse_tunnel_manager',  # Reverse tunnel configs
-        '/etc/nftables.d/direct-tunnel-manager.nft',
-        '/etc/nftables.d/reverse-tunnel-manager.nft',
+        '/etc/tunnel_manager',
+        '/etc/reverse_tunnel_manager',
+        os.path.join(NFT_RULES_DIR, 'direct-tunnel-manager.nft'),
+        os.path.join(NFT_RULES_DIR, 'reverse-tunnel-manager.nft'),
         '/etc/wireguard/wg0.conf'
     ]
-
     for path in paths_to_remove:
         if os.path.exists(path):
             try:
@@ -1116,7 +1010,6 @@ def uninstall_script():
                 print(f"{C.GREEN}Removed {path}.{C.END}")
             except OSError as e:
                 print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
-
     apply_nftables_config()
     print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
     return True  # Signal to exit after uninstall
@@ -1142,13 +1035,10 @@ def main():
                 args.callback_url, args.client_ip
             )
             return
-
     if os.geteuid() != 0:
         sys.exit(f"{C.RED}This script requires root privileges. Please run with sudo.{C.END}")
-
     direct_manager = DirectTunnelManager()
     reverse_manager = ReverseTunnelManager()
-
     while True:
         clear_screen()
         print(f"{C.HEADER}======== Ultimate Tunnel Manager v{SCRIPT_VERSION} ========{C.END}")
@@ -1160,7 +1050,6 @@ def main():
         print(f"{C.RED}4. Uninstall Script and All Configs")
         print(f"{C.CYAN}5. Exit{C.END}")
         choice = input("\nEnter your choice: ").strip()
-
         if choice == '1':
             direct_manager.main_menu()
         elif choice == '2':
@@ -1170,7 +1059,7 @@ def main():
             press_enter_to_continue()
         elif choice == '4':
             if uninstall_script():
-                break  # Exit script after a successful uninstall
+                break
             else:
                 press_enter_to_continue()
         elif choice == '5':
