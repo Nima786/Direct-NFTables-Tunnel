@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '3.3.0'
+VERSION = '3.4.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -198,6 +198,8 @@ def direct_tunnel_workflow():
         return True
 
     def generate_direct_rules(new_ports_str=None):
+        # FIXED: Ensure the nftables.d directory exists before writing to it.
+        os.makedirs(os.path.dirname(DIRECT_TUNNEL_RULES_FILE), exist_ok=True)
         tunnels = load_direct_tunnels()
         if not tunnels:
             if os.path.exists(DIRECT_TUNNEL_RULES_FILE):
@@ -330,7 +332,6 @@ def direct_tunnel_workflow():
         for k, v in options.items():
             print(f"{k}. {v}")
         choice = input("Enter choice: ").strip()
-
         if choice == '1':
             add_direct_tunnel()
         elif choice == '2':
@@ -552,6 +553,8 @@ def reverse_tunnel_workflow():
             print("Invalid selection.")
 
     def generate_reverse_rules():
+        # FIXED: Ensure the nftables.d directory exists before writing to it.
+        os.makedirs(os.path.dirname(REVERSE_TUNNEL_RULES_FILE), exist_ok=True)
         tunnels = load_reverse_tunnels()
         if not tunnels:
             if os.path.exists(REVERSE_TUNNEL_RULES_FILE):
