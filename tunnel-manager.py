@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.0.4
+Version: 2.0.5
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,9 +23,9 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.0.4"
+SCRIPT_VERSION = "2.0.5"
 # URL for the client setup and local installation
-SCRIPT_URL = "https://raw.githubusercontent.com/Nima768/Direct-NFTables-Tunnel/main/tunnel-manager.py"
+SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
 NFT_RULES_DIR = '/etc/nftables.d'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
@@ -58,7 +58,7 @@ def press_enter_to_continue():
 def run_command(command, use_sudo=True, capture=True, text=True, shell=False, command_input=None):
     """
     Runs a shell command with sudo privileges, capturing output.
-    Returns the result object on success, None on failure.
+    Returns the result object. Check result.returncode for success/failure.
     """
     if use_sudo and os.geteuid() != 0:
         if shell:
@@ -66,7 +66,6 @@ def run_command(command, use_sudo=True, capture=True, text=True, shell=False, co
         else:
             command = ['sudo'] + command
     try:
-        # check=False allows us to handle errors manually
         return subprocess.run(
             command,
             check=False,
@@ -150,12 +149,10 @@ def ensure_ip_forwarding():
     result = run_command(['sysctl', 'net.ipv4.ip_forward'], capture=True)
     if result and result.returncode == 0 and 'net.ipv4.ip_forward = 1' in result.stdout:
         return True
-
     print(f"{C.YELLOW}Enabling IP forwarding...{C.END}")
     if run_command(['sysctl', '-w', 'net.ipv4.ip_forward=1']).returncode != 0:
         print(f"{C.RED}Failed to enable IP forwarding dynamically.{C.END}")
         return False
-
     try:
         with open('/etc/sysctl.conf', 'r+') as f:
             content = f.read()
@@ -171,7 +168,6 @@ def ensure_ip_forwarding():
         return True
     except IOError as e:
         print(f"{C.RED}Error updating /etc/sysctl.conf: {e}{C.END}")
-        print(f"{C.YELLOW}IP forwarding will not be persistent.{C.END}")
         return False
 
 
@@ -180,7 +176,6 @@ def ensure_base_nftables_config():
     Ensures the base nftables configuration is sane (dir exists, include line is present).
     This is a prerequisite for starting the service reliably.
     """
-    # 1. Ensure the rules directory exists
     if not os.path.exists(NFT_RULES_DIR):
         try:
             os.makedirs(NFT_RULES_DIR, 0o755)
@@ -188,8 +183,6 @@ def ensure_base_nftables_config():
         except OSError as e:
             print(f"{C.RED}Fatal: Could not create directory {NFT_RULES_DIR}: {e}{C.END}")
             return False
-
-    # 2. Ensure the include line is in the main config
     include_line = f'include "{NFT_RULES_DIR}/*.nft"'
     if not os.path.exists(MAIN_NFT_CONFIG):
         print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}")
@@ -214,56 +207,20 @@ def ensure_base_nftables_config():
     return True
 
 
-def manage_nftables_service():
-    """Central function to check, reset, enable, and start the nftables service."""
-    # Check if active
-    if run_command(['systemctl', 'is-active', '--quiet', 'nftables']).returncode == 0:
-        return True
-
-    print(f"{C.YELLOW}nftables service is not active.{C.END}")
-
-    # Check if failed, and if so, reset the state
-    if run_command(['systemctl', 'is-failed', '--quiet', 'nftables']).returncode == 0:
-        print(f"{C.YELLOW}Service is in a failed state. Resetting...{C.END}")
-        run_command(['systemctl', 'reset-failed', 'nftables'])
-
-    # Check if enabled
-    if run_command(['systemctl', 'is-enabled', '--quiet', 'nftables']).returncode != 0:
-        print(f"{C.YELLOW}Service is not enabled. Enabling now...{C.END}")
-        if run_command(['systemctl', 'enable', 'nftables']).returncode != 0:
-            print(f"{C.RED}Fatal: Failed to enable nftables service.{C.END}")
-            return False
-
-    # Attempt to start
-    print(f"{C.CYAN}Attempting to start nftables service...{C.END}")
-    if run_command(['systemctl', 'start', 'nftables']).returncode != 0:
-        print(f"{C.RED}Fatal: Failed to start nftables service.{C.END}")
-        print(f"{C.YELLOW}Run 'journalctl -xeu nftables.service' for details.{C.END}")
-        return False
-
-    print(f"{C.GREEN}nftables service started successfully.{C.END}")
-    return True
-
-
 def apply_nftables_config():
     """Validates syntax and then applies the new nftables configuration."""
-    # 1. Validate syntax before attempting to load
     print(f"{C.CYAN}Checking nftables configuration syntax...{C.END}")
     syntax_check = run_command(['nft', '--check', '--file', MAIN_NFT_CONFIG])
     if syntax_check.returncode != 0:
         print(f"{C.RED}Error: nftables configuration check failed!{C.END}")
-        print(f"{C.YELLOW}The service was NOT reloaded to prevent a crash.{C.END}")
         if syntax_check.stderr:
             print(f"{C.RED}Details: {syntax_check.stderr.strip()}{C.END}")
         return False
-
     print(f"{C.GREEN}Syntax OK. Applying changes to nftables service...{C.END}")
-    # 2. Use reload-or-restart for robustness
     apply_cmd = run_command(['systemctl', 'reload-or-restart', 'nftables'])
     if apply_cmd.returncode != 0:
-        print(f"{C.RED}Failed to apply nftables rules.{C.END}")
+        print(f"{C.RED}Failed to apply nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
         return False
-
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
     return True
 
@@ -340,10 +297,17 @@ class DirectTunnelManager:
     def generate_and_apply_rules(self, new_ports_str=None):
         """Generates the nftables rules file and reloads the service."""
         tunnels = load_json_db(self.db_file)
+        # If no tunnels exist, write an empty but valid rules file
+        # to ensure the nftables service can start or reload without errors.
         if not tunnels:
-            if os.path.exists(self.rules_file):
-                run_command(['rm', '-f', self.rules_file])
-                print(f"{C.YELLOW}No tunnels configured. Removing old rules file.{C.END}")
+            print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset to ensure service stability.{C.END}")
+            empty_ruleset = f"table inet {self.nft_table_name} {{}}\n"
+            try:
+                with open(self.rules_file, 'w') as f:
+                    f.write(empty_ruleset)
+            except IOError as e:
+                print(f"{C.RED}Error writing empty rules file {self.rules_file}: {e}{C.END}")
+                return
             apply_nftables_config()
             return
 
@@ -355,12 +319,17 @@ class DirectTunnelManager:
 
         prerouting_rules = []
         postrouting_rules = []
+        unique_foreign_ips = set()
+
         for tunnel in tunnels.values():
             foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
             if ports_str:
                 prerouting_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
                 prerouting_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
-                postrouting_rules.append(f"ip daddr {foreign_ip} oif {public_interface} masquerade")
+                unique_foreign_ips.add(foreign_ip)
+
+        for ip in unique_foreign_ips:
+            postrouting_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
 
         rules_content = [
             f"# NAT rules generated by {self.manager_name} v{SCRIPT_VERSION}",
@@ -371,7 +340,7 @@ class DirectTunnelManager:
             "\t}",
             "\tchain postrouting {",
             "\t\ttype nat hook postrouting priority srcnat; policy accept;",
-            "\t\t" + "\n\t\t".join(sorted(list(set(postrouting_rules)))),
+            "\t\t" + "\n\t\t".join(postrouting_rules),
             "\t}",
             "}",
         ]
@@ -479,8 +448,7 @@ class DirectTunnelManager:
 
     def main_menu(self):
         """The main menu loop for the Direct Tunnel Manager."""
-        # This setup is critical and must pass before showing the menu
-        if not ensure_base_nftables_config() or not manage_nftables_service():
+        if not ensure_base_nftables_config():
             press_enter_to_continue()
             return
         ensure_dependencies({'nftables': 'nft'})
@@ -733,8 +701,14 @@ class ReverseTunnelManager:
         """Generates nftables rules for all reverse tunnels."""
         tunnels = load_json_db(self.tunnels_db_file)
         if not tunnels:
-            if os.path.exists(self.rules_file):
-                run_command(['rm', '-f', self.rules_file])
+            print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset to ensure service stability.{C.END}")
+            empty_ruleset = f"table inet {self.nft_table_name} {{}}\n"
+            try:
+                with open(self.rules_file, 'w') as f:
+                    f.write(empty_ruleset)
+            except IOError as e:
+                print(f"{C.RED}Error writing empty rules file {self.rules_file}: {e}{C.END}")
+                return
             apply_nftables_config()
             return
         res = run_command("ip -o -4 route show to default | awk '{print $5}'", shell=True)
@@ -744,21 +718,21 @@ class ReverseTunnelManager:
             return
         prerouting_rules = []
         postrouting_rules = []
+        unique_dest_ips = set()
         for tunnel in tunnels.values():
             ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
             prerouting_rules.append(f'iif "{public_interface}" tcp dport {{ {ports} }} dnat ip to {dest_ip}')
             prerouting_rules.append(f'iif "{public_interface}" udp dport {{ {ports} }} dnat ip to {dest_ip}')
+            unique_dest_ips.add(dest_ip)
+        for dest_ip in unique_dest_ips:
             postrouting_rules.append(f'ip daddr {dest_ip} oif "wg0" masquerade')
-
         rules_content = [
             f"# Rules generated by {self.manager_name} v{SCRIPT_VERSION}",
             f"table inet {self.nft_table_name} {{",
             "\tchain prerouting { type nat hook prerouting priority dstnat; policy accept; }",
             "\t\t" + "\n\t\t".join(prerouting_rules),
-            "\t}",
             "\tchain postrouting { type nat hook postrouting priority srcnat; policy accept; }",
-            "\t\t" + "\n\t\t".join(sorted(list(set(postrouting_rules)))),
-            "\t}",
+            "\t\t" + "\n\t\t".join(postrouting_rules),
             "}",
         ]
         with open(self.rules_file, 'w') as f:
@@ -871,10 +845,10 @@ class ReverseTunnelManager:
 
     def main_menu(self):
         """The main menu loop for the Reverse Tunnel Manager."""
-        deps = {'nftables': 'nft', 'curl': 'curl', 'wireguard': 'wg', 'gawk': 'awk'}
-        if not ensure_base_nftables_config() or not manage_nftables_service():
+        if not ensure_base_nftables_config():
             press_enter_to_continue()
             return
+        deps = {'nftables': 'nft', 'curl': 'curl', 'wireguard': 'wg', 'gawk': 'awk'}
         ensure_dependencies(deps)
         ensure_ip_forwarding()
         while True:
@@ -1012,7 +986,7 @@ def uninstall_script():
                 print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
     apply_nftables_config()
     print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
-    return True  # Signal to exit after uninstall
+    return True
 
 
 # ############################################################################
