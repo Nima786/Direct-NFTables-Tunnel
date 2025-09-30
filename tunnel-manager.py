@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '4.0.0'
+VERSION = '5.0.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -576,8 +576,10 @@ def reverse_tunnel_workflow():
             rules.append(f'add rule inet reverse_nat postrouting ip daddr {dest_ip} oif "wg0" masquerade')
         with open(REVERSE_TUNNEL_RULES_FILE, 'w') as f:
             f.write('\n'.join(rules))
-        run_command(['systemctl', 'reload-or-restart', 'nftables'])
-        print("Reverse tunnel rules applied.")
+        if run_command(['systemctl', 'reload-or-restart', 'nftables']):
+            print("Reverse tunnel rules applied.")
+        else:
+            print(f"{C.RED}Failed to apply reverse tunnel rules.{C.END}")
 
     def list_reverse_tunnels():
         tunnels = load_reverse_tunnels()
