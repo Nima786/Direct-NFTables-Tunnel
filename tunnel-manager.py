@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '3.8.0'
+VERSION = '3.9.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -381,7 +381,7 @@ def reverse_tunnel_workflow():
                 self.end_headers()
 
         def log_message(self, format, *args):
-            return  # Suppress logging
+            return
 
     def run_temp_server(holder):
         nonlocal RECEIVED_KEY
