@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '3.1.0'
+VERSION = '3.2.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -223,7 +223,10 @@ def direct_tunnel_workflow():
             print(f"{C.GREEN}Direct NAT rules applied.{C.END}")
             if new_ports_str:
                 print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
-                warning = f"If running a firewall, you MUST open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} to allow traffic.{C.END}"
+                warning = (
+                    f"If running a firewall, you MUST open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} "
+                    f"to allow traffic.{C.END}"
+                )
                 print(warning)
         else:
             print(f"{C.RED}Failed to apply rules.{C.END}")
@@ -464,11 +467,9 @@ def reverse_tunnel_workflow():
         if RECEIVED_KEY == "SERVER_ERROR":
             print("Could not start registration server.")
             return
-        cmd = (
-            f'curl -fsSL "{SCRIPT_URL}" | sudo python3 - setup_client '
-            f'--server-pubkey "{pubkey}" --server-endpoint "{public_ip}:51820" '
-            f'--callback-url "http://{public_ip}:{CALLBACK_PORT}/register" --client-ip "{ip}"'
-        )
+        cmd = (f'curl -fsSL "{SCRIPT_URL}" | sudo python3 - setup_client '
+               f'--server-pubkey "{pubkey}" --server-endpoint "{public_ip}:51820" '
+               f'--callback-url "http://{public_ip}:{CALLBACK_PORT}/register" --client-ip "{ip}"')
         print(f"Run on client, this will wait:\n\n{C.CYAN}{cmd}{C.END}\n")
         for _ in range(120):
             if RECEIVED_KEY:
@@ -563,8 +564,12 @@ def reverse_tunnel_workflow():
             "\tchain postrouting { type nat hook postrouting priority srcnat; policy accept; }", "}"
         ]
         for t in tunnels.values():
-            rules.append(f'add rule inet reverse_nat prerouting iif "{interface}" tcp dport {{ {t["ports"]} }} dnat ip to {t["dest_ip"]}')
-            rules.append(f'add rule inet reverse_nat prerouting iif "{interface}" udp dport {{ {t["ports"]} }} dnat ip to {t["dest_ip"]}')
+            tcp_rule = (f'add rule inet reverse_nat prerouting iif "{interface}" '
+                        f'tcp dport {{ {t["ports"]} }} dnat ip to {t["dest_ip"]}')
+            udp_rule = (f'add rule inet reverse_nat prerouting iif "{interface}" '
+                        f'udp dport {{ {t["ports"]} }} dnat ip to {t["dest_ip"]}')
+            rules.append(tcp_rule)
+            rules.append(udp_rule)
         unique_dest_ips = {t['dest_ip'] for t in tunnels.values()}
         for dest_ip in unique_dest_ips:
             rules.append(f'add rule inet reverse_nat postrouting ip daddr {dest_ip} oif "wg0" masquerade')
