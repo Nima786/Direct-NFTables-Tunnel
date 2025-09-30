@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # --- Shared Configuration & Constants ---
 SCRIPT_VERSION = "2.1.4"
 # URL for the client setup and local installation
-SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
+SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Hyper-Route/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
 NFT_RULES_DIR = '/etc/nftables.d'
 MAIN_NFT_CONFIG = '/etc/nftables.conf'
