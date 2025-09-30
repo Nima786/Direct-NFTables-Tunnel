@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.0.6
+Version: 2.0.7
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.0.6"
+SCRIPT_VERSION = "2.0.7"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
@@ -297,9 +297,11 @@ class DirectTunnelManager:
     def generate_and_apply_rules(self, new_ports_str=None):
         """Generates the nftables rules file and reloads the service."""
         tunnels = load_json_db(self.db_file)
+        rules_content = ""
+
         if not tunnels:
             print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset.{C.END}")
-            rules_content = [f"table inet {self.nft_table_name} {{}}"]
+            rules_content = f"table inet {self.nft_table_name} {{}}\n"
         else:
             result = run_command("ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'", shell=True)
             public_interface = result.stdout.strip() if result and result.returncode == 0 else None
@@ -314,29 +316,38 @@ class DirectTunnelManager:
             for tunnel in tunnels.values():
                 foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
                 if ports_str:
-                    prerouting_rules.append(f"\tiif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
-                    prerouting_rules.append(f"\tiif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    # flake8 fix: break long lines
+                    rule_tcp = (f"iif {public_interface} tcp dport {{ {ports_str} }} "
+                                f"dnat ip to {foreign_ip}")
+                    prerouting_rules.append(rule_tcp)
+                    rule_udp = (f"iif {public_interface} udp dport {{ {ports_str} }} "
+                                f"dnat ip to {foreign_ip}")
+                    prerouting_rules.append(rule_udp)
                     unique_foreign_ips.add(foreign_ip)
 
             for ip in unique_foreign_ips:
-                postrouting_rules.append(f"\tip daddr {ip} oif {public_interface} masquerade")
+                postrouting_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
 
-            rules_content = [
+            pr_rules_str = "\n\t\t".join(prerouting_rules)
+            po_rules_str = "\n\t\t".join(postrouting_rules)
+
+            rules_template = [
                 f"table inet {self.nft_table_name} {{",
                 "\tchain prerouting {",
                 "\t\ttype nat hook prerouting priority dstnat; policy accept;",
-                "\n".join(prerouting_rules),
+                f"\t\t{pr_rules_str}",
                 "\t}",
                 "\tchain postrouting {",
                 "\t\ttype nat hook postrouting priority srcnat; policy accept;",
-                "\n".join(postrouting_rules),
+                f"\t\t{po_rules_str}",
                 "\t}",
                 "}",
             ]
+            rules_content = "\n".join(rules_template)
 
         try:
             with open(self.rules_file, 'w') as f:
-                f.write("\n".join(rules_content))
+                f.write(rules_content)
             if apply_nftables_config() and new_ports_str:
                 print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
                 warning_msg = (f"Remember to open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} "
@@ -693,9 +704,10 @@ class ReverseTunnelManager:
     def generate_and_apply_rules(self):
         """Generates nftables rules for all reverse tunnels."""
         tunnels = load_json_db(self.tunnels_db_file)
+        rules_content = ""
         if not tunnels:
             print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset.{C.END}")
-            rules_content = [f"table inet {self.nft_table_name} {{}}"]
+            rules_content = f"table inet {self.nft_table_name} {{}}\n"
         else:
             res = run_command("ip -o -4 route show to default | awk '{print $5}'", shell=True)
             public_interface = res.stdout.strip() if res and res.returncode == 0 else None
@@ -712,7 +724,7 @@ class ReverseTunnelManager:
                 unique_dest_ips.add(dest_ip)
             for dest_ip in unique_dest_ips:
                 postrouting_rules.append(f'\tip daddr {dest_ip} oif "wg0" masquerade')
-            rules_content = [
+            rules_template = [
                 f"table inet {self.nft_table_name} {{",
                 "\tchain prerouting { type nat hook prerouting priority dstnat; policy accept; }",
                 "\n".join(prerouting_rules),
@@ -720,8 +732,10 @@ class ReverseTunnelManager:
                 "\n".join(postrouting_rules),
                 "}",
             ]
+            rules_content = "\n".join(rules_template)
+
         with open(self.rules_file, 'w') as f:
-            f.write("\n".join(rules_content))
+            f.write(rules_content)
         apply_nftables_config()
 
     def add_tunnel(self):
