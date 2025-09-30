@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.1.3
+Version: 2.1.4
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.3"
+SCRIPT_VERSION = "2.1.4"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/ultimate-tunnel-manager'
@@ -283,8 +283,12 @@ def generate_and_apply_rules():
             for tunnel in direct_tunnels.values():
                 foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
                 if ports_str:
-                    direct_pr_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
-                    direct_pr_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    rule_tcp = (f"iif {public_interface} tcp dport {{ {ports_str} }} "
+                                f"dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(rule_tcp)
+                    rule_udp = (f"iif {public_interface} udp dport {{ {ports_str} }} "
+                                f"dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(rule_udp)
                     unique_foreign_ips.add(foreign_ip)
             for ip in unique_foreign_ips:
                 direct_po_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
