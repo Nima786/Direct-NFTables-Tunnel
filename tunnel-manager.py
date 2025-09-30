@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Configuration & Version ---
-VERSION = '3.0.0'
+VERSION = '3.1.0'
 
 # --- Constants for Direct Tunnels ---
 DIRECT_TUNNELS_DB_FILE = '/etc/tunnel_manager/direct_tunnels.json'
@@ -157,6 +157,7 @@ def ensure_include_line():
 # --- DIRECT TUNNEL MANAGER WORKFLOW ---
 ################################################################################
 
+
 def direct_tunnel_workflow():
     """Entry point for the Direct Tunnel management menu."""
 
@@ -185,12 +186,14 @@ def direct_tunnel_workflow():
                         system_used_ports.add(int(match.group(1)))
         system_conflicts = ports_to_check.intersection(system_used_ports)
         if system_conflicts:
-            print(f"{C.RED}Error: Port(s) {sorted(list(system_conflicts))} are in use by another system service.{C.END}")
+            ports = sorted(list(system_conflicts))
+            print(f"{C.RED}Error: Port(s) {ports} are in use by another system service.{C.END}")
             return False
         if other_tunnel_ports:
             tunnel_conflicts = ports_to_check.intersection(other_tunnel_ports)
             if tunnel_conflicts:
-                print(f"{C.RED}Error: Port(s) {sorted(list(tunnel_conflicts))} are used by another direct tunnel.{C.END}")
+                ports = sorted(list(tunnel_conflicts))
+                print(f"{C.RED}Error: Port(s) {ports} are used by another direct tunnel.{C.END}")
                 return False
         return True
 
@@ -209,15 +212,10 @@ def direct_tunnel_workflow():
             prerouting.append(f"iif {interface} udp dport {{ {t['ports']} }} dnat ip to {t['foreign_ip']}")
             unique_ips.add(t['foreign_ip'])
         postrouting = [f"ip daddr {ip} oif {interface} masquerade" for ip in unique_ips]
-        prerouting_str = "\n\t\t".join(prerouting)
-        postrouting_str = "\n\t\t".join(postrouting)
         rules = [
             f"# Direct NAT rules v{VERSION}", "", "table inet direct_nat {",
-            (f"\tchain prerouting {{ type nat hook prerouting priority dstnat; "
-             f"policy accept;\n\t\t{prerouting_str}\n\t}}"),
-            (f"\tchain postrouting {{ type nat hook postrouting priority srcnat; "
-             f"policy accept;\n\t\t{postrouting_str}\n\t}}"),
-            "}"
+            f"\tchain prerouting {{ type nat hook prerouting priority dstnat; policy accept; {' '.join(prerouting)} }}",
+            f"\tchain postrouting {{ type nat hook postrouting priority srcnat; policy accept; {' '.join(postrouting)} }}", "}"
         ]
         with open(DIRECT_TUNNEL_RULES_FILE, 'w') as f:
             f.write('\n'.join(rules))
@@ -225,7 +223,8 @@ def direct_tunnel_workflow():
             print(f"{C.GREEN}Direct NAT rules applied.{C.END}")
             if new_ports_str:
                 print(f"\n{C.BOLD}{C.YELLOW}--- ACTION REQUIRED ---")
-                print(f"If running a firewall, you MUST open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} to allow traffic.{C.END}")
+                warning = f"If running a firewall, you MUST open port(s) {C.GREEN}{new_ports_str}{C.YELLOW} to allow traffic.{C.END}"
+                print(warning)
         else:
             print(f"{C.RED}Failed to apply rules.{C.END}")
 
@@ -233,14 +232,17 @@ def direct_tunnel_workflow():
         tunnels = load_direct_tunnels()
         name = input(f"{C.CYAN}Enter a unique name: {C.END}").strip()
         if not name or name in tunnels:
-            print(f"{C.RED}Error: Name invalid or exists.{C.END}"); return
+            print(f"{C.RED}Error: Name invalid or exists.{C.END}")
+            return
         ip = input(f"{C.CYAN}Enter destination IP: {C.END}").strip()
         if not is_valid_ip(ip):
-            print(f"{C.RED}Error: Invalid IP.{C.END}"); return
+            print(f"{C.RED}Error: Invalid IP.{C.END}")
+            return
         ports_str = input(f"{C.CYAN}Enter ports (e.g., 80,443,1000-2000): {C.END}").strip()
         new_ports = parse_ports_to_set(ports_str)
         if not new_ports:
-            print(f"{C.RED}Error: Invalid ports.{C.END}"); return
+            print(f"{C.RED}Error: Invalid ports.{C.END}")
+            return
         all_ports = {p for t in tunnels.values() for p in parse_ports_to_set(t['ports'])}
         if not check_direct_port_conflicts(new_ports, other_tunnel_ports=all_ports):
             return
@@ -251,7 +253,8 @@ def direct_tunnel_workflow():
     def list_direct_tunnels():
         tunnels = load_direct_tunnels()
         if not tunnels:
-            print(f"\n{C.YELLOW}No tunnels configured.{C.END}"); return
+            print(f"\n{C.YELLOW}No tunnels configured.{C.END}")
+            return
         print(f"\n{C.HEADER}--- Configured Direct Tunnels ---{C.END}")
         for n, d in sorted(tunnels.items()):
             print(f" {C.BOLD}{C.BLUE}{n}{C.END}: Ports {C.CYAN}{d['ports']}{C.END} -> {C.CYAN}{d['foreign_ip']}{C.END}")
@@ -259,7 +262,8 @@ def direct_tunnel_workflow():
     def edit_direct_tunnel():
         tunnels = load_direct_tunnels()
         if not tunnels:
-            print(f"\n{C.YELLOW}No tunnels to edit.{C.END}"); return
+            print(f"\n{C.YELLOW}No tunnels to edit.{C.END}")
+            return
         names = sorted(tunnels.keys())
         for i, name in enumerate(names, 1):
             print(f"{i}. {name}")
@@ -272,14 +276,17 @@ def direct_tunnel_workflow():
             print(f"\nEditing '{old_name}'. Press Enter to keep current value.")
             new_name = input(f" New name [{old_name}]: ").strip() or old_name
             if new_name != old_name and new_name in tunnels:
-                print(f"{C.RED}Error: Name '{new_name}' already exists.{C.END}"); return
+                print(f"{C.RED}Error: Name '{new_name}' already exists.{C.END}")
+                return
             new_ip = input(f" New destination IP [{current['foreign_ip']}]: ").strip() or current['foreign_ip']
             if not is_valid_ip(new_ip):
-                print(f"{C.RED}Error: Invalid IP.{C.END}"); return
+                print(f"{C.RED}Error: Invalid IP.{C.END}")
+                return
             new_ports_str = input(f" New ports [{current['ports']}]: ").strip() or current['ports']
             new_ports = parse_ports_to_set(new_ports_str)
             if not new_ports:
-                print(f"{C.RED}Error: Invalid ports.{C.END}"); return
+                print(f"{C.RED}Error: Invalid ports.{C.END}")
+                return
             other_ports = {p for n, t in tunnels.items() if n != old_name for p in parse_ports_to_set(t['ports'])}
             if not check_direct_port_conflicts(new_ports, other_tunnel_ports=other_ports):
                 return
@@ -293,7 +300,8 @@ def direct_tunnel_workflow():
     def remove_direct_tunnel():
         tunnels = load_direct_tunnels()
         if not tunnels:
-            print(f"\n{C.YELLOW}No tunnels to remove.{C.END}"); return
+            print(f"\n{C.YELLOW}No tunnels to remove.{C.END}")
+            return
         names = sorted(tunnels.keys())
         for i, name in enumerate(names, 1):
             print(f"{i}. {name}")
@@ -311,23 +319,35 @@ def direct_tunnel_workflow():
     while True:
         clear_screen()
         print(f"\n{C.HEADER}--- Direct NAT Tunnel Manager ---{C.END}")
-        options = {"1": "Add", "2": "List", "3": "Edit", "4": "Remove", "5": "Re-apply Rules", "6": "Return to Main Menu"}
+        options = {
+            "1": "Add", "2": "List", "3": "Edit", "4": "Remove",
+            "5": "Re-apply Rules", "6": "Return to Main Menu"
+        }
         for k, v in options.items():
             print(f"{k}. {v}")
         choice = input("Enter choice: ").strip()
-        if choice == '1': add_direct_tunnel()
-        elif choice == '2': list_direct_tunnels()
-        elif choice == '3': edit_direct_tunnel()
-        elif choice == '4': remove_direct_tunnel()
-        elif choice == '5': generate_direct_rules()
-        elif choice == '6': break
-        else: print(f"{C.RED}Invalid choice.{C.END}")
+
+        if choice == '1':
+            add_direct_tunnel()
+        elif choice == '2':
+            list_direct_tunnels()
+        elif choice == '3':
+            edit_direct_tunnel()
+        elif choice == '4':
+            remove_direct_tunnel()
+        elif choice == '5':
+            generate_direct_rules()
+        elif choice == '6':
+            break
+        else:
+            print(f"{C.RED}Invalid choice.{C.END}")
         press_enter_to_continue()
 
 
 ################################################################################
 # --- REVERSE TUNNEL MANAGER WORKFLOW ---
 ################################################################################
+
 
 def reverse_tunnel_workflow():
     """Entry point for the Reverse Tunnel management menu."""
@@ -336,27 +356,33 @@ def reverse_tunnel_workflow():
     class KeyRegHandler(BaseHTTPRequestHandler):
         def do_POST(self):
             nonlocal RECEIVED_KEY
-            try:
-                data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                pubkey = data.get('pubkey')
-                if pubkey and re.match(r'^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$', pubkey):
-                    RECEIVED_KEY = pubkey
-                    self.send_response(200)
+            if self.path == '/register':
+                try:
+                    data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    pubkey = data.get('pubkey')
+                    if pubkey and re.match(r'^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$', pubkey):
+                        RECEIVED_KEY = pubkey
+                        self.send_response(200)
+                        self.end_headers()
+                        self.wfile.write(b'OK')
+                    else:
+                        self.send_response(400)
+                        self.end_headers()
+                except Exception:
+                    self.send_response(500)
                     self.end_headers()
-                    self.wfile.write(b'OK')
-                else:
-                    self.send_response(400)
-                    self.end_headers()
-            except Exception:
-                self.send_response(500)
+            else:
+                self.send_response(404)
                 self.end_headers()
+
         def log_message(self, format, *args):
-            return
+            return  # Suppress logging
 
     def run_temp_server(holder):
         nonlocal RECEIVED_KEY
         try:
-            holder.append(HTTPServer(('', CALLBACK_PORT), KeyRegHandler))
+            server = HTTPServer(('', CALLBACK_PORT), KeyRegHandler)
+            holder.append(server)
             holder[0].serve_forever()
         except Exception:
             RECEIVED_KEY = "SERVER_ERROR"
@@ -428,17 +454,21 @@ def reverse_tunnel_workflow():
         RECEIVED_KEY = None
         ip = get_next_wg_ip()
         if not ip:
-            print("Subnet full."); return
+            print("Subnet full.")
+            return
         pubkey = run_command(['wg', 'show', 'wg0', 'public-key']).stdout.strip()
         public_ip = get_public_ip()
         holder = []
         threading.Thread(target=run_temp_server, args=(holder,), daemon=True).start()
         time.sleep(1)
         if RECEIVED_KEY == "SERVER_ERROR":
-            print("Could not start registration server."); return
-        cmd = (f'curl -fsSL "{SCRIPT_URL}" | sudo python3 - setup_client '
-               f'--server-pubkey "{pubkey}" --server-endpoint "{public_ip}:51820" '
-               f'--callback-url "http://{public_ip}:{CALLBACK_PORT}/register" --client-ip "{ip}"')
+            print("Could not start registration server.")
+            return
+        cmd = (
+            f'curl -fsSL "{SCRIPT_URL}" | sudo python3 - setup_client '
+            f'--server-pubkey "{pubkey}" --server-endpoint "{public_ip}:51820" '
+            f'--callback-url "http://{public_ip}:{CALLBACK_PORT}/register" --client-ip "{ip}"'
+        )
         print(f"Run on client, this will wait:\n\n{C.CYAN}{cmd}{C.END}\n")
         for _ in range(120):
             if RECEIVED_KEY:
@@ -447,7 +477,8 @@ def reverse_tunnel_workflow():
         if holder:
             holder[0].shutdown()
         if not RECEIVED_KEY or RECEIVED_KEY == "SERVER_ERROR":
-            print("Timeout or error."); return
+            print("Timeout or error.")
+            return
         name = input("Enter peer name: ").strip() or f"Peer-{ip}"
         conf = f"\n[Peer]\n# {name}\nPublicKey = {RECEIVED_KEY}\nAllowedIPs = {ip}/32\n"
         with open(WG_CONFIG_FILE, 'a') as f:
@@ -461,7 +492,8 @@ def reverse_tunnel_workflow():
     def remove_peer():
         peers = load_peers()
         if not peers:
-            print("No peers to remove."); return
+            print("No peers to remove.")
+            return
         names = sorted(peers.keys())
         for i, name in enumerate(names, 1):
             print(f"{i}. {name}")
@@ -492,21 +524,25 @@ def reverse_tunnel_workflow():
     def add_reverse_tunnel():
         peers = load_peers()
         if not peers:
-            print("No peers configured. Add a peer first."); return
+            print("No peers configured. Add a peer first.")
+            return
         peer_names = sorted(peers.keys())
         for i, name in enumerate(peer_names, 1):
             print(f"{i}. {name} ({peers[name]['ip']})")
         try:
             choice = int(input("Select destination peer (0 to cancel): "))
-            if choice == 0: return
+            if choice == 0:
+                return
             dest_ip = peers[peer_names[choice - 1]]['ip']
             tunnels = load_reverse_tunnels()
             name = input("Enter a unique name for this rule: ").strip()
             if not name or name in tunnels:
-                print("Name invalid or exists."); return
+                print("Name invalid or exists.")
+                return
             ports_str = input(f"Enter public ports to forward to {dest_ip}: ").strip()
             if not parse_ports_to_set(ports_str):
-                print("Invalid port format."); return
+                print("Invalid port format.")
+                return
             tunnels[name] = {'dest_ip': dest_ip, 'ports': ports_str}
             save_reverse_tunnels(tunnels)
             generate_reverse_rules()
@@ -516,48 +552,64 @@ def reverse_tunnel_workflow():
     def generate_reverse_rules():
         tunnels = load_reverse_tunnels()
         if not tunnels:
-            if os.path.exists(REVERSE_TUNNEL_RULES_FILE): os.remove(REVERSE_TUNNEL_RULES_FILE)
-            run_command(['systemctl', 'reload-or-restart', 'nftables']); return
+            if os.path.exists(REVERSE_TUNNEL_RULES_FILE):
+                os.remove(REVERSE_TUNNEL_RULES_FILE)
+            run_command(['systemctl', 'reload-or-restart', 'nftables'])
+            return
         interface = subprocess.getoutput("ip -4 route ls | grep default | grep -Po '(?<=dev )(\\S+)'").strip()
-        rules = ["table inet reverse_nat {",
-                 "\tchain prerouting { type nat hook prerouting priority dstnat; policy accept; }",
-                 "\tchain postrouting { type nat hook postrouting priority srcnat; policy accept; }", "}"]
+        rules = [
+            "table inet reverse_nat {",
+            "\tchain prerouting { type nat hook prerouting priority dstnat; policy accept; }",
+            "\tchain postrouting { type nat hook postrouting priority srcnat; policy accept; }", "}"
+        ]
         for t in tunnels.values():
             rules.append(f'add rule inet reverse_nat prerouting iif "{interface}" tcp dport {{ {t["ports"]} }} dnat ip to {t["dest_ip"]}')
             rules.append(f'add rule inet reverse_nat prerouting iif "{interface}" udp dport {{ {t["ports"]} }} dnat ip to {t["dest_ip"]}')
         unique_dest_ips = {t['dest_ip'] for t in tunnels.values()}
         for dest_ip in unique_dest_ips:
             rules.append(f'add rule inet reverse_nat postrouting ip daddr {dest_ip} oif "wg0" masquerade')
-        with open(REVERSE_TUNNEL_RULES_FILE, 'w') as f: f.write('\n'.join(rules))
+        with open(REVERSE_TUNNEL_RULES_FILE, 'w') as f:
+            f.write('\n'.join(rules))
         run_command(['systemctl', 'reload-or-restart', 'nftables'])
         print("Reverse tunnel rules applied.")
-    
+
     def list_reverse_tunnels():
         tunnels = load_reverse_tunnels()
-        if not tunnels: print(f"\n{C.YELLOW}No reverse tunnels configured.{C.END}"); return
+        if not tunnels:
+            print(f"\n{C.YELLOW}No reverse tunnels configured.{C.END}")
+            return
         print(f"\n{C.HEADER}--- Configured Reverse Tunnels ---{C.END}")
         for n, d in sorted(tunnels.items()):
             print(f" {C.BOLD}{C.BLUE}{n}{C.END}: Ports {C.CYAN}{d['ports']}{C.END} -> {C.CYAN}{d['dest_ip']}{C.END}")
-            
+
     def remove_reverse_tunnel():
         tunnels = load_reverse_tunnels()
-        if not tunnels: print(f"\n{C.YELLOW}No tunnels to remove.{C.END}"); return
+        if not tunnels:
+            print(f"\n{C.YELLOW}No tunnels to remove.{C.END}")
+            return
         names = sorted(tunnels.keys())
-        for i, name in enumerate(names, 1): print(f"{i}. {name}")
+        for i, name in enumerate(names, 1):
+            print(f"{i}. {name}")
         try:
             choice = int(input("Enter number to remove (0 to cancel): "))
             if 0 < choice <= len(names):
                 del tunnels[names[choice - 1]]
-                save_reverse_tunnels(tunnels); generate_reverse_rules()
-        except (ValueError, IndexError): print(f"{C.RED}Invalid input.{C.END}")
+                save_reverse_tunnels(tunnels)
+                generate_reverse_rules()
+        except (ValueError, IndexError):
+            print(f"{C.RED}Invalid input.{C.END}")
 
     def uninstall_reverse_tunnel():
-        if input("This will remove all configs. Are you sure? (y/N): ").lower() != 'y': return
-        if os.path.exists(REVERSE_DB_DIR): shutil.rmtree(REVERSE_DB_DIR)
-        if os.path.exists(REVERSE_TUNNEL_RULES_FILE): os.remove(REVERSE_TUNNEL_RULES_FILE)
+        if input("This will remove all configs. Are you sure? (y/N): ").lower() != 'y':
+            return
+        if os.path.exists(REVERSE_DB_DIR):
+            shutil.rmtree(REVERSE_DB_DIR)
+        if os.path.exists(REVERSE_TUNNEL_RULES_FILE):
+            os.remove(REVERSE_TUNNEL_RULES_FILE)
         if os.path.exists(WG_CONFIG_FILE):
-            run_command(['wg-quick', 'down', 'wg0']); os.remove(WG_CONFIG_FILE)
-        generate_reverse_rules() # To clear rules
+            run_command(['wg-quick', 'down', 'wg0'])
+            os.remove(WG_CONFIG_FILE)
+        generate_reverse_rules()  # To clear rules
         print("Uninstallation complete.")
 
     is_setup = os.path.exists(WG_CONFIG_FILE)
@@ -576,16 +628,22 @@ def reverse_tunnel_workflow():
             menu['6'] = ("Re-apply All Rules", generate_reverse_rules)
             menu['7'] = ("Uninstall", uninstall_reverse_tunnel)
         menu['9'] = ("Return to Main Menu", "break")
-        
-        for key, (text, _) in menu.items(): print(f"{key}. {text}")
+
+        for key, (text, _) in menu.items():
+            print(f"{key}. {text}")
         choice = input("Enter choice: ").strip()
         action = menu.get(choice, [None, None])[1]
 
-        if action == "break": break
+        if action == "break":
+            break
         elif action:
-            if choice == '7': action(); break
-            else: action()
-        else: print("Invalid choice.")
+            if choice == '7':
+                action()
+                break
+            else:
+                action()
+        else:
+            print("Invalid choice.")
         press_enter_to_continue()
 
 
@@ -599,9 +657,11 @@ def setup_wireguard_client(server_pubkey, server_endpoint, callback_url, client_
         os.remove(WG_CONFIG_FILE)
     privkey = run_command(['wg', 'genkey'], False).stdout.strip()
     pubkey = run_command(['wg', 'pubkey'], command_input=privkey).stdout.strip()
-    conf = (f"[Interface]\nPrivateKey = {privkey}\nAddress = {client_ip}/24\n\n"
-            f"[Peer]\nPublicKey = {server_pubkey}\nEndpoint = {server_endpoint}\n"
-            f"AllowedIPs = 10.0.0.0/24\nPersistentKeepalive = 25\n")
+    conf = (
+        f"[Interface]\nPrivateKey = {privkey}\nAddress = {client_ip}/24\n\n"
+        f"[Peer]\nPublicKey = {server_pubkey}\nEndpoint = {server_endpoint}\n"
+        f"AllowedIPs = 10.0.0.0/24\nPersistentKeepalive = 25\n"
+    )
     os.makedirs(os.path.dirname(WG_CONFIG_FILE), exist_ok=True)
     with open(WG_CONFIG_FILE, 'w') as f:
         f.write(conf)
@@ -610,15 +670,18 @@ def setup_wireguard_client(server_pubkey, server_endpoint, callback_url, client_
     cmd = ['curl', '-s', '-X', 'POST', '-H', 'Content-Type: application/json', '--data-raw', payload, callback_url]
     reg_result = run_command(cmd, False)
     if not reg_result or reg_result.stdout.strip() != 'OK':
-        print("Failed to register with endpoint."); sys.exit(1)
+        print("Failed to register with endpoint.")
+        sys.exit(1)
     run_command(['wg-quick', 'up', 'wg0'])
     run_command(['systemctl', 'enable', 'wg-quick@wg0'])
-    print("Client setup complete."); sys.exit(0)
+    print("Client setup complete.")
+    sys.exit(0)
 
 
 ################################################################################
 # --- TOP-LEVEL SCRIPT EXECUTION ---
 ################################################################################
+
 
 def main():
     parser = argparse.ArgumentParser(add_help=False)
@@ -629,11 +692,15 @@ def main():
     parser.add_argument('--client-ip')
     if 'setup_client' in sys.argv:
         args = parser.parse_args()
-        if (args.command == 'setup_client' and all([args.server_pubkey, args.server_endpoint, args.callback_url, args.client_ip])):
+        if (args.command == 'setup_client' and
+                all([args.server_pubkey, args.server_endpoint, args.callback_url, args.client_ip])):
             if os.geteuid() != 0:
                 sys.exit("Client setup requires root.")
             ensure_dependencies({'wireguard': 'wg', 'curl': 'curl'})
-            setup_wireguard_client(args.server_pubkey, args.server_endpoint, args.callback_url, args.client_ip)
+            setup_wireguard_client(
+                args.server_pubkey, args.server_endpoint,
+                args.callback_url, args.client_ip
+            )
         return
     if os.geteuid() != 0:
         sys.exit("This script requires root privileges.")
@@ -653,9 +720,11 @@ def main():
         elif choice == '2':
             reverse_tunnel_workflow()
         elif choice == '3':
-            print("Exiting."); break
+            print("Exiting.")
+            break
         else:
-            print("Invalid choice."); time.sleep(1)
+            print("Invalid choice.")
+            time.sleep(1)
 
 
 if __name__ == '__main__':
