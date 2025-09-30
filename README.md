@@ -24,7 +24,7 @@ This is a **direct tunnel**, meaning the connection is initiated by the end-user
 
 You can run the script with a single command without any permanent installation. This is a great way to try it out.
 
-    sudo bash -c "python3 <(curl -fsSL https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manage.py)"
+    sudo bash -c "python3 <(curl -fsSL https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py)"
 
 The first time you run this, the script will present you with a simple setup menu:
 
