@@ -3,7 +3,7 @@
 
 """
 Ultimate Tunnel Manager
-Version: 2.0.0
+Version: 2.0.1
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -22,8 +22,8 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.0.0"
-# Correct URL for the client setup command
+SCRIPT_VERSION = "2.0.1"
+# Corrected URL for the client setup command
 REVERSE_TUNNEL_SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Direct-NFTables-Tunnel/main/tunnel-manager.py"
 
 
@@ -270,7 +270,8 @@ class DirectTunnelManager:
 
         system_conflicts = ports_to_check.intersection(system_used_ports)
         if system_conflicts:
-            print(f"{C.RED}Error: Port(s) {sorted(list(system_conflicts))} are in use by another service.{C.END}")
+            ports = sorted(list(system_conflicts))
+            print(f"{C.RED}Error: Port(s) {ports} are in use by another service.{C.END}")
             return False
 
         # 2. Check against other tunnels
@@ -283,7 +284,8 @@ class DirectTunnelManager:
 
         tunnel_conflicts = ports_to_check.intersection(other_tunnel_ports)
         if tunnel_conflicts:
-            print(f"{C.RED}Error: Port(s) {sorted(list(tunnel_conflicts))} are used by another tunnel.{C.END}")
+            ports = sorted(list(tunnel_conflicts))
+            print(f"{C.RED}Error: Port(s) {ports} are used by another tunnel.{C.END}")
             return False
 
         return True
@@ -760,8 +762,13 @@ class ReverseTunnelManager:
         for tunnel in tunnels.values():
             ports = tunnel["ports"]
             dest_ip = tunnel["dest_ip"]
-            rules.append(f'add rule inet {self.nft_table_name} prerouting iif "{public_interface}" tcp dport {{ {ports} }} dnat ip to {dest_ip}')
-            rules.append(f'add rule inet {self.nft_table_name} prerouting iif "{public_interface}" udp dport {{ {ports} }} dnat ip to {dest_ip}')
+            # flake8 E501 fix: break long lines
+            rule_tcp = (f'add rule inet {self.nft_table_name} prerouting iif "{public_interface}" '
+                        f'tcp dport {{ {ports} }} dnat ip to {dest_ip}')
+            rules.append(rule_tcp)
+            rule_udp = (f'add rule inet {self.nft_table_name} prerouting iif "{public_interface}" '
+                        f'udp dport {{ {ports} }} dnat ip to {dest_ip}')
+            rules.append(rule_udp)
 
         unique_dest_ips = {t['dest_ip'] for t in tunnels.values()}
         for dest_ip in unique_dest_ips:
@@ -893,13 +900,17 @@ class ReverseTunnelManager:
         try:
             shutil.copy2(sys.argv[0], self.install_path)
             os.chmod(self.install_path, 0o755)
-            print(f"{C.GREEN}Installation successful! Run with: {C.BOLD}sudo {os.path.basename(self.install_path)}{C.END}")
+            # flake8 E501 fix
+            install_cmd = f"sudo {os.path.basename(self.install_path)}"
+            print(f"{C.GREEN}Installation successful! Run with: {C.BOLD}{install_cmd}{C.END}")
         except Exception as e:
             print(f"{C.RED}Installation failed: {e}{C.END}")
 
     def uninstall(self):
         """Removes the script and all its configurations."""
-        print(f"{C.RED}{C.BOLD}This will remove the script, all databases, nftables rules, and the WireGuard config.{C.END}")
+        # flake8 E501 fix
+        print(f"{C.RED}{C.BOLD}This will remove the script, all databases, nftables rules,"
+              " and the WireGuard config.{C.END}")
         choice = input(f"{C.RED}Are you sure you want to continue? (y/N): {C.END}")
         if choice.lower().strip() != 'y':
             print("Uninstall aborted.")
@@ -925,12 +936,10 @@ class ReverseTunnelManager:
         ensure_dependencies(deps)
         ensure_ip_forwarding()
 
-        is_setup = os.path.exists(self.wg_config_file)
-
         while True:
             clear_screen()
             print(f"{C.HEADER}===== Reverse Tunnel Manager {SCRIPT_VERSION} ====={C.END}")
-            # Refresh setup status
+            # Refresh setup status each loop
             is_setup = os.path.exists(self.wg_config_file)
 
             if not is_setup:
