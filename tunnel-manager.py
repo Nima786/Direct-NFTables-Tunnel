@@ -3,7 +3,7 @@
 
 """
 Hyper-Route
-Version: 2.1.6
+Version: 2.1.7
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.6"
+SCRIPT_VERSION = "2.1.7"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Hyper-Route/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/hyper-route'
@@ -210,8 +210,39 @@ def ensure_base_nftables_config():
     return True
 
 
+def ensure_nftables_service_running_and_enabled():
+    """Proactively enables and starts the nftables service if it's not already."""
+    # 1. Ensure service is enabled for boot persistence
+    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
+    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
+        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
+        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
+        if enable_cmd.returncode == 0:
+            print(f"{C.GREEN}Service enabled successfully.{C.END}")
+        else:
+            print(f"{C.RED}Failed to enable nftables service.{C.END}")
+            return False
+
+    # 2. Ensure service is active now
+    if run_command(['systemctl', 'is-active', '--quiet', 'nftables']).returncode == 0:
+        return True  # Already active, nothing more to do
+
+    print(f"{C.YELLOW}nftables service is not active. Attempting to start...{C.END}")
+    if run_command(['systemctl', 'is-failed', '--quiet', 'nftables']).returncode == 0:
+        print(f"{C.YELLOW}Service is in a failed state. Resetting...{C.END}")
+        run_command(['systemctl', 'reset-failed', 'nftables'])
+
+    if run_command(['systemctl', 'start', 'nftables']).returncode != 0:
+        print(f"{C.RED}Fatal: Failed to start nftables service.{C.END}")
+        print(f"{C.YELLOW}Run 'journalctl -xeu nftables.service' for details.{C.END}")
+        return False
+
+    print(f"{C.GREEN}nftables service started successfully.{C.END}")
+    return True
+
+
 def apply_nftables_config():
-    """Validates syntax, applies config, and ensures the service is enabled for boot."""
+    """Validates syntax and then reloads the already running nftables service."""
     print(f"{C.CYAN}Checking nftables configuration syntax...{C.END}")
     syntax_check = run_command(['nft', '--check', '--file', MAIN_NFT_CONFIG])
     if syntax_check.returncode != 0:
@@ -221,22 +252,12 @@ def apply_nftables_config():
         return False
 
     print(f"{C.GREEN}Syntax OK. Applying changes to nftables service...{C.END}")
-    apply_cmd = run_command(['systemctl', 'reload-or-restart', 'nftables'])
+    apply_cmd = run_command(['systemctl', 'reload', 'nftables'])
     if apply_cmd.returncode != 0:
-        print(f"{C.RED}Failed to apply nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
+        print(f"{C.RED}Failed to reload nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
         return False
+
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
-
-    # --- Ensure persistence after successful application ---
-    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
-    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
-        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
-        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
-        if enable_cmd.returncode == 0:
-            print(f"{C.GREEN}Service enabled successfully.{C.END}")
-        else:
-            print(f"{C.RED}Failed to enable nftables service.{C.END}")
-
     return True
 
 
@@ -312,12 +333,8 @@ def generate_and_apply_rules():
             unique_dest_ips = set()
             for tunnel in reverse_tunnels.values():
                 ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
-                rule_tcp = (f'iif {public_interface} tcp dport {{ {ports} }} '
-                            f'dnat ip to {dest_ip}')
-                reverse_pr_rules.append(rule_tcp)
-                rule_udp = (f'iif {public_interface} udp dport {{ {ports} }} '
-                            f'dnat ip to {dest_ip}')
-                reverse_pr_rules.append(rule_udp)
+                reverse_pr_rules.append(f'iif {public_interface} tcp dport {{ {ports} }} dnat ip to {dest_ip}')
+                reverse_pr_rules.append(f'iif {public_interface} udp dport {{ {ports} }} dnat ip to {dest_ip}')
                 unique_dest_ips.add(dest_ip)
             for dest_ip in unique_dest_ips:
                 reverse_po_rules.append(f'ip daddr {dest_ip} oif wg0 masquerade')
@@ -497,7 +514,7 @@ class DirectTunnelManager:
 
     def main_menu(self):
         """The main menu loop for the Direct Tunnel Manager."""
-        if not ensure_base_nftables_config():
+        if not ensure_base_nftables_config() or not ensure_nftables_service_running_and_enabled():
             press_enter_to_continue()
             return
         ensure_dependencies({'nftables': 'nft'})
@@ -852,7 +869,7 @@ class ReverseTunnelManager:
 
     def main_menu(self):
         """The main menu loop for the Reverse Tunnel Manager."""
-        if not ensure_base_nftables_config():
+        if not ensure_base_nftables_config() or not ensure_nftables_service_running_and_enabled():
             press_enter_to_continue()
             return
         deps = {'nftables': 'nft', 'curl': 'curl', 'wireguard': 'wg', 'gawk': 'awk'}
