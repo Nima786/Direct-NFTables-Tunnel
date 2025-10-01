@@ -208,10 +208,9 @@ def ensure_base_nftables_config():
             print(f"{C.RED}Fatal: Could not read/write {MAIN_NFT_CONFIG}: {e}{C.END}")
             return False
 
-    # --- NEW CRITICAL STEP ---
-    # Ensure the unified rules file exists, even if empty, to prevent boot-time service failure.
+    # --- CRITICAL STEP for boot persistence ---
     if not os.path.exists(ULTIMATE_RULES_FILE):
-        print(f"{C.YELLOW}Creating initial empty rules file: {ULTIMATE_RULES_FILE}{C.END}")
+        print(f"{C.YELLOW}Creating initial empty rules file for boot-time stability...{C.END}")
         try:
             with open(ULTIMATE_RULES_FILE, 'w') as f:
                 f.write(f"table inet {ULTIMATE_TABLE_NAME} {{}}\n")
@@ -222,39 +221,8 @@ def ensure_base_nftables_config():
     return True
 
 
-def ensure_nftables_service_running_and_enabled():
-    """Proactively enables and starts the nftables service if it's not already."""
-    # 1. Ensure service is enabled for boot persistence
-    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
-    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
-        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
-        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
-        if enable_cmd.returncode == 0:
-            print(f"{C.GREEN}Service enabled successfully.{C.END}")
-        else:
-            print(f"{C.RED}Failed to enable nftables service.{C.END}")
-            return False
-
-    # 2. Ensure service is active now
-    if run_command(['systemctl', 'is-active', '--quiet', 'nftables']).returncode == 0:
-        return True  # Already active, nothing more to do
-
-    print(f"{C.YELLOW}nftables service is not active. Attempting to start...{C.END}")
-    if run_command(['systemctl', 'is-failed', '--quiet', 'nftables']).returncode == 0:
-        print(f"{C.YELLOW}Service is in a failed state. Resetting...{C.END}")
-        run_command(['systemctl', 'reset-failed', 'nftables'])
-
-    if run_command(['systemctl', 'start', 'nftables']).returncode != 0:
-        print(f"{C.RED}Fatal: Failed to start nftables service.{C.END}")
-        print(f"{C.YELLOW}Run 'journalctl -xeu nftables.service' for details.{C.END}")
-        return False
-
-    print(f"{C.GREEN}nftables service started successfully.{C.END}")
-    return True
-
-
 def apply_nftables_config():
-    """Validates syntax and then reloads the already running nftables service."""
+    """Validates syntax, applies config, and ensures the service is enabled for boot."""
     print(f"{C.CYAN}Checking nftables configuration syntax...{C.END}")
     syntax_check = run_command(['nft', '--check', '--file', MAIN_NFT_CONFIG])
     if syntax_check.returncode != 0:
@@ -264,12 +232,22 @@ def apply_nftables_config():
         return False
 
     print(f"{C.GREEN}Syntax OK. Applying changes to nftables service...{C.END}")
-    apply_cmd = run_command(['systemctl', 'reload', 'nftables'])
+    apply_cmd = run_command(['systemctl', 'reload-or-restart', 'nftables'])
     if apply_cmd.returncode != 0:
-        print(f"{C.RED}Failed to reload nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
+        print(f"{C.RED}Failed to apply nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
         return False
-
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
+
+    # --- Ensure persistence after successful application ---
+    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
+    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
+        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
+        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
+        if enable_cmd.returncode == 0:
+            print(f"{C.GREEN}Service enabled successfully.{C.END}")
+        else:
+            print(f"{C.RED}Failed to enable nftables service.{C.END}")
+
     return True
 
 
