@@ -3,7 +3,7 @@
 
 """
 Hyper-Route
-Version: 2.1.7
+Version: 2.1.8
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.7"
+SCRIPT_VERSION = "2.1.8"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Hyper-Route/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/hyper-route'
@@ -176,8 +176,7 @@ def ensure_ip_forwarding():
 
 def ensure_base_nftables_config():
     """
-    Ensures the base nftables configuration is sane (dir exists, include line is present).
-    This is a prerequisite for starting the service reliably.
+    Ensures the base nftables configuration is sane (dir, main conf, and empty rules file).
     """
     if not os.path.exists(NFT_RULES_DIR):
         try:
@@ -186,6 +185,7 @@ def ensure_base_nftables_config():
         except OSError as e:
             print(f"{C.RED}Fatal: Could not create directory {NFT_RULES_DIR}: {e}{C.END}")
             return False
+
     include_line = f'include "{NFT_RULES_DIR}/*.nft"'
     if not os.path.exists(MAIN_NFT_CONFIG):
         print(f"{C.YELLOW}Main config {MAIN_NFT_CONFIG} not found. Creating a default config...{C.END}")
@@ -207,6 +207,18 @@ def ensure_base_nftables_config():
         except IOError as e:
             print(f"{C.RED}Fatal: Could not read/write {MAIN_NFT_CONFIG}: {e}{C.END}")
             return False
+
+    # --- NEW CRITICAL STEP ---
+    # Ensure the unified rules file exists, even if empty, to prevent boot-time service failure.
+    if not os.path.exists(ULTIMATE_RULES_FILE):
+        print(f"{C.YELLOW}Creating initial empty rules file: {ULTIMATE_RULES_FILE}{C.END}")
+        try:
+            with open(ULTIMATE_RULES_FILE, 'w') as f:
+                f.write(f"table inet {ULTIMATE_TABLE_NAME} {{}}\n")
+        except IOError as e:
+            print(f"{C.RED}Fatal: Could not create initial rules file: {e}{C.END}")
+            return False
+
     return True
 
 
