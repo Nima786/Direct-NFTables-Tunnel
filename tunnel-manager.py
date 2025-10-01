@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hyper-Route
+Ultimate Tunnel Manager
 Version: 2.1.5
 
 This script combines a direct NAT/port forwarding manager and a
@@ -227,7 +227,7 @@ def apply_nftables_config():
         return False
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
 
-    # --- Ensure persistence after successful application ---
+    # --- NEW: Ensure persistence after successful application ---
     is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
     if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
         print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
@@ -295,12 +295,8 @@ def generate_and_apply_rules():
             for tunnel in direct_tunnels.values():
                 foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
                 if ports_str:
-                    rule_tcp = (f"iif {public_interface} tcp dport {{ {ports_str} }} "
-                                f"dnat ip to {foreign_ip}")
-                    direct_pr_rules.append(rule_tcp)
-                    rule_udp = (f"iif {public_interface} udp dport {{ {ports_str} }} "
-                                f"dnat ip to {foreign_ip}")
-                    direct_pr_rules.append(rule_udp)
+                    direct_pr_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
                     unique_foreign_ips.add(foreign_ip)
             for ip in unique_foreign_ips:
                 direct_po_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
