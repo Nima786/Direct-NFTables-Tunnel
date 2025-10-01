@@ -208,7 +208,6 @@ def ensure_base_nftables_config():
             print(f"{C.RED}Fatal: Could not read/write {MAIN_NFT_CONFIG}: {e}{C.END}")
             return False
 
-    # --- CRITICAL STEP for boot persistence ---
     if not os.path.exists(ULTIMATE_RULES_FILE):
         print(f"{C.YELLOW}Creating initial empty rules file for boot-time stability...{C.END}")
         try:
@@ -223,9 +222,8 @@ def ensure_base_nftables_config():
 
 def ensure_nftables_service_running_and_enabled():
     """Proactively enables and starts the nftables service if it's not already."""
-    # 1. Ensure service is enabled for boot persistence
     is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
-    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
+    if is_enabled_check.returncode != 0:
         print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
         enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
         if enable_cmd.returncode == 0:
@@ -234,9 +232,8 @@ def ensure_nftables_service_running_and_enabled():
             print(f"{C.RED}Failed to enable nftables service.{C.END}")
             return False
 
-    # 2. Ensure service is active now
     if run_command(['systemctl', 'is-active', '--quiet', 'nftables']).returncode == 0:
-        return True  # Already active, nothing more to do
+        return True
 
     print(f"{C.YELLOW}nftables service is not active. Attempting to start...{C.END}")
     if run_command(['systemctl', 'is-failed', '--quiet', 'nftables']).returncode == 0:
@@ -309,7 +306,6 @@ def generate_and_apply_rules():
     reverse_tunnels = load_json_db(ReverseTunnelManager.DB_FILE)
     rules_content = ""
 
-    # --- NEW: Create systemd override if reverse tunnels exist to solve boot race condition ---
     if reverse_tunnels:
         override_dir = '/etc/systemd/system/nftables.service.d'
         override_file = os.path.join(override_dir, 'hyper-route.conf')
