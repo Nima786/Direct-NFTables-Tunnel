@@ -3,7 +3,7 @@
 
 """
 Hyper-Route
-Version: 2.1.8
+Version: 2.1.9
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.8"
+SCRIPT_VERSION = "2.1.9"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Hyper-Route/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/hyper-route'
@@ -297,6 +297,55 @@ def save_json_db(db_file, data):
         return False
 
 
+def check_global_port_conflicts(ports_to_check, ignore_details=None):
+    """
+    Checks for port conflicts against system services and ALL tunnel types.
+    ignore_details is a dict like {'name': 'tunnel_name', 'type': 'direct'}
+    """
+    # 1. Check against system services
+    system_used_ports = set()
+    for proto_flag in ['-tlnp', '-ulnp']:
+        result = run_command(['ss', proto_flag], capture=True)
+        if result and result.returncode == 0:
+            for line in result.stdout.splitlines()[1:]:
+                match = re.search(r':(\d+)\s', line)
+                if match:
+                    system_used_ports.add(int(match.group(1)))
+    system_conflicts = ports_to_check.intersection(system_used_ports)
+    if system_conflicts:
+        ports = sorted(list(system_conflicts))
+        print(f"{C.RED}Error: Port(s) {ports} are in use by another system service.{C.END}")
+        return False
+
+    # 2. Check against all tunnel types
+    all_tunnel_ports = set()
+    # Check direct tunnels
+    direct_tunnels = load_json_db(DirectTunnelManager.DB_FILE)
+    for name, details in direct_tunnels.items():
+        if ignore_details and ignore_details['type'] == 'direct' and name == ignore_details['name']:
+            continue
+        _, ports = parse_ports(details.get('ports', ''))
+        if ports:
+            all_tunnel_ports.update(ports)
+
+    # Check reverse tunnels
+    reverse_tunnels = load_json_db(ReverseTunnelManager.DB_FILE)
+    for name, details in reverse_tunnels.items():
+        if ignore_details and ignore_details['type'] == 'reverse' and name == ignore_details['name']:
+            continue
+        _, ports = parse_ports(details.get('ports', ''))
+        if ports:
+            all_tunnel_ports.update(ports)
+
+    tunnel_conflicts = ports_to_check.intersection(all_tunnel_ports)
+    if tunnel_conflicts:
+        ports = sorted(list(tunnel_conflicts))
+        print(f"{C.RED}Error: Port(s) {ports} are already used by another tunnel rule.{C.END}")
+        return False
+
+    return True
+
+
 def generate_and_apply_rules():
     """
     Generates a single, unified nftables rules file for BOTH managers
@@ -410,34 +459,6 @@ class DirectTunnelManager:
     def __init__(self):
         self.db_file = self.DB_FILE
 
-    def check_port_conflicts(self, ports_to_check, tunnels, tunnel_to_ignore=None):
-        """Checks for port conflicts against system services and other tunnels."""
-        system_used_ports = set()
-        for proto_flag in ['-tlnp', '-ulnp']:
-            result = run_command(['ss', proto_flag], capture=True)
-            if result and result.returncode == 0:
-                for line in result.stdout.splitlines()[1:]:
-                    match = re.search(r':(\d+)\s', line)
-                    if match:
-                        system_used_ports.add(int(match.group(1)))
-        system_conflicts = ports_to_check.intersection(system_used_ports)
-        if system_conflicts:
-            ports = sorted(list(system_conflicts))
-            print(f"{C.RED}Error: Port(s) {ports} are in use by another service.{C.END}")
-            return False
-        other_tunnel_ports = set()
-        for name, details in tunnels.items():
-            if name != tunnel_to_ignore:
-                _, ports = parse_ports(details.get('ports', ''))
-                if ports:
-                    other_tunnel_ports.update(ports)
-        tunnel_conflicts = ports_to_check.intersection(other_tunnel_ports)
-        if tunnel_conflicts:
-            ports = sorted(list(tunnel_conflicts))
-            print(f"{C.RED}Error: Port(s) {ports} are used by another tunnel.{C.END}")
-            return False
-        return True
-
     def add_tunnel(self):
         """Adds a new direct NAT tunnel."""
         tunnels = load_json_db(self.db_file)
@@ -454,7 +475,7 @@ class DirectTunnelManager:
         if not new_ports_set:
             print(f"{C.RED}Error: Invalid or empty port format specified.{C.END}")
             return
-        if not self.check_port_conflicts(new_ports_set, tunnels):
+        if not check_global_port_conflicts(new_ports_set):
             return
         tunnels[name] = {'foreign_ip': foreign_ip, 'ports': formatted_ports}
         if save_json_db(self.db_file, tunnels):
@@ -506,7 +527,8 @@ class DirectTunnelManager:
         if not new_ports_set:
             print(f"{C.RED}Error: Invalid or empty port format specified.{C.END}")
             return
-        if not self.check_port_conflicts(new_ports_set, tunnels, tunnel_to_ignore=tunnel_to_edit):
+        ignore_details = {'name': tunnel_to_edit, 'type': 'direct'}
+        if not check_global_port_conflicts(new_ports_set, ignore_details=ignore_details):
             return
         tunnels[tunnel_to_edit] = {'foreign_ip': new_ip, 'ports': formatted_ports}
         if save_json_db(self.db_file, tunnels):
@@ -811,9 +833,11 @@ class ReverseTunnelManager:
             print(f"{C.RED}Error: Name is empty or already exists.{C.END}")
             return
         ports_str = input(f"Enter public ports to forward to '{selected_peer_name}' (e.g., 80, 443): ").strip()
-        formatted_ports, _ = parse_ports(ports_str)
-        if not formatted_ports:
+        formatted_ports, new_ports_set = parse_ports(ports_str)
+        if not new_ports_set:
             print(f"{C.RED}Error: Invalid port format.{C.END}")
+            return
+        if not check_global_port_conflicts(new_ports_set):
             return
         tunnels[name] = {'dest_ip': dest_ip, 'ports': formatted_ports, 'peer_name': selected_peer_name}
         if save_json_db(self.tunnels_db_file, tunnels):
@@ -858,9 +882,12 @@ class ReverseTunnelManager:
             print(f"{C.RED}Error: Rule name '{new_name}' already exists.{C.END}")
             return
         new_ports_str = input(f"  Enter new ports [{current['ports']}]: ").strip() or current['ports']
-        formatted_ports, _ = parse_ports(new_ports_str)
-        if not formatted_ports:
+        formatted_ports, new_ports_set = parse_ports(new_ports_str)
+        if not new_ports_set:
             print(f"{C.RED}Error: Invalid port format.{C.END}")
+            return
+        ignore_details = {'name': old_name, 'type': 'reverse'}
+        if not check_global_port_conflicts(new_ports_set, ignore_details=ignore_details):
             return
         del tunnels[old_name]
         tunnels[new_name] = {'dest_ip': current['dest_ip'], 'ports': formatted_ports, 'peer_name': current['peer_name']}
