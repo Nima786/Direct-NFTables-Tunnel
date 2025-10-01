@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Ultimate Tunnel Manager
-Version: 2.1.5
+Hyper-Route
+Version: 2.1.6
 
 This script combines a direct NAT/port forwarding manager and a
 WireGuard-based reverse tunnel manager into a single, comprehensive tool.
@@ -23,7 +23,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Shared Configuration & Constants ---
-SCRIPT_VERSION = "2.1.5"
+SCRIPT_VERSION = "2.1.6"
 # URL for the client setup and local installation
 SCRIPT_URL = "https://raw.githubusercontent.com/Nima786/Hyper-Route/main/tunnel-manager.py"
 INSTALL_PATH = '/usr/local/bin/hyper-route'
@@ -227,7 +227,7 @@ def apply_nftables_config():
         return False
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
 
-    # --- NEW: Ensure persistence after successful application ---
+    # --- Ensure persistence after successful application ---
     is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
     if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
         print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
@@ -295,8 +295,12 @@ def generate_and_apply_rules():
             for tunnel in direct_tunnels.values():
                 foreign_ip, ports_str = tunnel['foreign_ip'], tunnel['ports']
                 if ports_str:
-                    direct_pr_rules.append(f"iif {public_interface} tcp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
-                    direct_pr_rules.append(f"iif {public_interface} udp dport {{ {ports_str} }} dnat ip to {foreign_ip}")
+                    rule_tcp = (f"iif {public_interface} tcp dport {{ {ports_str} }} "
+                                f"dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(rule_tcp)
+                    rule_udp = (f"iif {public_interface} udp dport {{ {ports_str} }} "
+                                f"dnat ip to {foreign_ip}")
+                    direct_pr_rules.append(rule_udp)
                     unique_foreign_ips.add(foreign_ip)
             for ip in unique_foreign_ips:
                 direct_po_rules.append(f"ip daddr {ip} oif {public_interface} masquerade")
@@ -308,8 +312,12 @@ def generate_and_apply_rules():
             unique_dest_ips = set()
             for tunnel in reverse_tunnels.values():
                 ports, dest_ip = tunnel["ports"], tunnel["dest_ip"]
-                reverse_pr_rules.append(f'iif {public_interface} tcp dport {{ {ports} }} dnat ip to {dest_ip}')
-                reverse_pr_rules.append(f'iif {public_interface} udp dport {{ {ports} }} dnat ip to {dest_ip}')
+                rule_tcp = (f'iif {public_interface} tcp dport {{ {ports} }} '
+                            f'dnat ip to {dest_ip}')
+                reverse_pr_rules.append(rule_tcp)
+                rule_udp = (f'iif {public_interface} udp dport {{ {ports} }} '
+                            f'dnat ip to {dest_ip}')
+                reverse_pr_rules.append(rule_udp)
                 unique_dest_ips.add(dest_ip)
             for dest_ip in unique_dest_ips:
                 reverse_po_rules.append(f'ip daddr {dest_ip} oif wg0 masquerade')
