@@ -221,8 +221,39 @@ def ensure_base_nftables_config():
     return True
 
 
+def ensure_nftables_service_running_and_enabled():
+    """Proactively enables and starts the nftables service if it's not already."""
+    # 1. Ensure service is enabled for boot persistence
+    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
+    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
+        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
+        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
+        if enable_cmd.returncode == 0:
+            print(f"{C.GREEN}Service enabled successfully.{C.END}")
+        else:
+            print(f"{C.RED}Failed to enable nftables service.{C.END}")
+            return False
+
+    # 2. Ensure service is active now
+    if run_command(['systemctl', 'is-active', '--quiet', 'nftables']).returncode == 0:
+        return True  # Already active, nothing more to do
+
+    print(f"{C.YELLOW}nftables service is not active. Attempting to start...{C.END}")
+    if run_command(['systemctl', 'is-failed', '--quiet', 'nftables']).returncode == 0:
+        print(f"{C.YELLOW}Service is in a failed state. Resetting...{C.END}")
+        run_command(['systemctl', 'reset-failed', 'nftables'])
+
+    if run_command(['systemctl', 'start', 'nftables']).returncode != 0:
+        print(f"{C.RED}Fatal: Failed to start nftables service.{C.END}")
+        print(f"{C.YELLOW}Run 'journalctl -xeu nftables.service' for details.{C.END}")
+        return False
+
+    print(f"{C.GREEN}nftables service started successfully.{C.END}")
+    return True
+
+
 def apply_nftables_config():
-    """Validates syntax, applies config, and ensures the service is enabled for boot."""
+    """Validates syntax and then reloads the already running nftables service."""
     print(f"{C.CYAN}Checking nftables configuration syntax...{C.END}")
     syntax_check = run_command(['nft', '--check', '--file', MAIN_NFT_CONFIG])
     if syntax_check.returncode != 0:
@@ -232,22 +263,12 @@ def apply_nftables_config():
         return False
 
     print(f"{C.GREEN}Syntax OK. Applying changes to nftables service...{C.END}")
-    apply_cmd = run_command(['systemctl', 'reload-or-restart', 'nftables'])
+    apply_cmd = run_command(['systemctl', 'reload', 'nftables'])
     if apply_cmd.returncode != 0:
-        print(f"{C.RED}Failed to apply nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
+        print(f"{C.RED}Failed to reload nftables rules. Check 'journalctl -xeu nftables.service' for details.{C.END}")
         return False
+
     print(f"{C.GREEN}nftables configuration applied successfully.{C.END}")
-
-    # --- Ensure persistence after successful application ---
-    is_enabled_check = run_command(['systemctl', 'is-enabled', '--quiet', 'nftables'])
-    if is_enabled_check.returncode != 0:  # 0 means enabled, 1 means disabled.
-        print(f"{C.YELLOW}Enabling nftables service for persistence across reboots...{C.END}")
-        enable_cmd = run_command(['systemctl', 'enable', 'nftables'])
-        if enable_cmd.returncode == 0:
-            print(f"{C.GREEN}Service enabled successfully.{C.END}")
-        else:
-            print(f"{C.RED}Failed to enable nftables service.{C.END}")
-
     return True
 
 
@@ -287,6 +308,22 @@ def generate_and_apply_rules():
     direct_tunnels = load_json_db(DirectTunnelManager.DB_FILE)
     reverse_tunnels = load_json_db(ReverseTunnelManager.DB_FILE)
     rules_content = ""
+
+    # --- NEW: Create systemd override if reverse tunnels exist to solve boot race condition ---
+    if reverse_tunnels:
+        override_dir = '/etc/systemd/system/nftables.service.d'
+        override_file = os.path.join(override_dir, 'hyper-route.conf')
+        override_content = "[Unit]\nAfter=wg-quick@wg0.service\nWants=wg-quick@wg0.service\n"
+        needs_reload = False
+        if not os.path.exists(override_file):
+            print(f"{C.YELLOW}Reverse tunnel detected. Creating systemd override for boot persistence...{C.END}")
+            os.makedirs(override_dir, exist_ok=True)
+            with open(override_file, 'w') as f:
+                f.write(override_content)
+            needs_reload = True
+        if needs_reload:
+            print(f"{C.CYAN}Reloading systemd daemon...{C.END}")
+            run_command(['systemctl', 'daemon-reload'])
 
     if not direct_tunnels and not reverse_tunnels:
         print(f"{C.YELLOW}No tunnels configured. Writing empty ruleset.{C.END}")
@@ -985,7 +1022,8 @@ def uninstall_script():
         '/etc/tunnel_manager',
         '/etc/reverse_tunnel_manager',
         ULTIMATE_RULES_FILE,
-        '/etc/wireguard/wg0.conf'
+        '/etc/wireguard/wg0.conf',
+        '/etc/systemd/system/nftables.service.d'  # Remove systemd override
     ]
     for path in paths_to_remove:
         if os.path.exists(path):
@@ -997,9 +1035,10 @@ def uninstall_script():
                 print(f"{C.GREEN}Removed {path}.{C.END}")
             except OSError as e:
                 print(f"{C.RED}Failed to remove {path}: {e}{C.END}")
-    # After removing files, write a final empty ruleset and apply
-    if os.path.exists(ULTIMATE_RULES_FILE):
-        os.remove(ULTIMATE_RULES_FILE)
+
+    # Reload systemd and apply a final empty ruleset
+    print(f"{C.CYAN}Reloading systemd daemon...{C.END}")
+    run_command(['systemctl', 'daemon-reload'])
     generate_and_apply_rules()
     print(f"\n{C.GREEN}Uninstallation complete.{C.END}")
     return True
